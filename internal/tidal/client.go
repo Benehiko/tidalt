@@ -21,9 +21,9 @@ const (
 )
 
 type Client struct {
-	Session *Session
-	HTTP    *http.Client
-	Oauth   *oauth2.Config
+	Session   *Session
+	Oauth     *oauth2.Config
+	Transport http.RoundTripper // optional; overrides the base transport (used in tests)
 }
 
 type Session struct {
@@ -37,7 +37,6 @@ type Session struct {
 
 func NewClient() *Client {
 	return &Client{
-		HTTP: &http.Client{Timeout: 10 * time.Second},
 		Oauth: &oauth2.Config{
 			ClientID:     ClientID,
 			ClientSecret: ClientSecret,
@@ -55,12 +54,16 @@ func NewClient() *Client {
 func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) {
 	fmt.Println("Initiating Tidal Login...")
 
-	// 1. Request Device Code
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+
+	// 1. Request Device Code manually — Tidal's response uses camelCase JSON
+	// keys (e.g. "deviceCode") instead of the RFC 8628 snake_case
+	// ("device_code"), so oauth2.Config.DeviceAuth cannot parse it directly.
 	data := url.Values{}
 	data.Set("client_id", ClientID)
 	data.Set("scope", "r_usr w_usr w_sub")
 
-	resp, err := c.HTTP.PostForm(c.Oauth.Endpoint.AuthURL, data)
+	resp, err := httpClient.PostForm(c.Oauth.Endpoint.AuthURL, data)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +106,7 @@ func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) 
 	}
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
-	sResp, err := c.HTTP.Do(req)
+	sResp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch session info: %w", err)
 	}
@@ -155,5 +158,16 @@ func (c *Client) TokenSource(ctx context.Context) oauth2.TokenSource {
 }
 
 func (c *Client) GetAuthClient(ctx context.Context) *http.Client {
+	if c.Transport != nil {
+		// Wrap the custom transport in an oauth2.Transport so the Authorization
+		// header is still added, but the actual round-trip goes through our
+		// injected transport (useful for tests).
+		return &http.Client{
+			Transport: &oauth2.Transport{
+				Source: c.TokenSource(ctx),
+				Base:   c.Transport,
+			},
+		}
+	}
 	return oauth2.NewClient(ctx, c.TokenSource(ctx))
 }
