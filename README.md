@@ -165,6 +165,28 @@ Your session is saved securely — to the system keychain where available, other
 
 ---
 
+## Debugging
+
+Set `TIDALT_DEBUG=true` to enable structured debug logging:
+
+```bash
+TIDALT_DEBUG=true tidalt
+```
+
+Logs are written to `~/.local/share/tidalt/debug-YYYYMMDD-HHMMSS.log`. Each
+run creates a new file. All URLs are written with query strings stripped to
+avoid capturing OAuth tokens or stream-signing parameters.
+
+```bash
+# Follow the latest log in real time
+tail -f ~/.local/share/tidalt/debug-*.log
+```
+
+See [docs/debugging.md](docs/debugging.md) for the full reference — logged
+events, token redaction behaviour, and common error patterns.
+
+---
+
 ## Dependencies
 
 | Library | Purpose |
