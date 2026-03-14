@@ -53,6 +53,7 @@ func main() {
 		client.Session = &session
 		fmt.Printf("Restored session for User %d (Country: %s)\n", session.UserID, session.CountryCode)
 	}
+	vault.Close()
 
 	// 3. Launch TUI
 	p := tea.NewProgram(ui.InitialModel(ctx, client), tea.WithAltScreen())
