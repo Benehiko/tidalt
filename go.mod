@@ -1,4 +1,4 @@
-module tidal-tui
+module github.com/Benehiko/tidalt
 
 go 1.26.1
 

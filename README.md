@@ -1,4 +1,6 @@
-# tidal-hifi
+# tidalt
+
+![tidal-hifi TUI](docs/tui.png)
 
 A terminal UI (TUI) for Tidal that delivers **bit-perfect, lossless audio** directly to your DAC — no PipeWire, no PulseAudio, no resampling.
 
@@ -107,16 +109,16 @@ sudo dnf install alsa-lib-devel
 ### Install with Go
 
 ```bash
-go install github.com/benehiko/tidal-hifi/cmd/tidal-tui@latest
+go install github.com/Benehiko/tidalt/cmd/tidalt@latest
 ```
 
 ### Build from source
 
 ```bash
-git clone https://github.com/benehiko/tidal-hifi.git
+git clone https://github.com/Benehiko/tidalt.git
 cd tidal-hifi
-go build -o tidal-tui ./cmd/tidal-tui
-./tidal-tui
+go build -o tidalt ./cmd/tidalt
+./tidalt
 ```
 
 ### First run
@@ -132,7 +134,7 @@ Initiating Tidal Login...
 Press ENTER to open the link in your browser, or wait for authorization...
 ```
 
-Your session is saved securely — to the system keychain where available, otherwise to an age-encrypted file at `~/.config/tidal-tui/secrets`. You will not be asked to log in again until the session expires.
+Your session is saved securely — to the system keychain where available, otherwise to an age-encrypted file at `~/.config/tidalt/secrets`. You will not be asked to log in again until the session expires.
 
 ---
 
@@ -157,8 +159,8 @@ Your session is saved securely — to the system keychain where available, other
 
 | What | Where |
 |------|-------|
-| OAuth2 session | System keychain or `~/.config/tidal-tui/secrets` (age-encrypted) |
-| Volume & device preference | `~/.local/share/tidal-tui/tidal-cache.db` |
+| OAuth2 session | System keychain or `~/.config/tidalt/secrets` (age-encrypted) |
+| Volume & device preference | `~/.local/share/tidalt/tidal-cache.db` |
 | Track metadata cache | Same database |
 
 ---

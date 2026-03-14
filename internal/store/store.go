@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	ServiceName = "tidal-tui"
+	ServiceName = "tidalt"
 	AccountName = "session"
 	DBFile      = "tidal-cache.db"
 )

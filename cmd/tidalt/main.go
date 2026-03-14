@@ -8,9 +8,9 @@ import (
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"tidal-tui/internal/store"
-	"tidal-tui/internal/tidal"
-	"tidal-tui/internal/ui"
+	"github.com/Benehiko/tidalt/internal/store"
+	"github.com/Benehiko/tidalt/internal/tidal"
+	"github.com/Benehiko/tidalt/internal/ui"
 )
 
 func main() {

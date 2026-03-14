@@ -11,9 +11,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	
-	"tidal-tui/internal/player"
-	"tidal-tui/internal/store"
-	"tidal-tui/internal/tidal"
+	"github.com/Benehiko/tidalt/internal/player"
+	"github.com/Benehiko/tidalt/internal/store"
+	"github.com/Benehiko/tidalt/internal/tidal"
 )
 
 type State int
