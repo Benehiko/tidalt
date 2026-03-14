@@ -43,6 +43,11 @@ Setup complete.
 Clicking "Open in desktop app" on tidal.com will now open tidalt.
 ```
 
+Some browsers (notably Firefox and Librewolf) apply additional protocol
+filtering on top of XDG and require a one-time browser-side configuration
+step. See [docs/browser-url-handler.md](docs/browser-url-handler.md) for
+per-browser instructions and troubleshooting.
+
 ---
 
 On first launch you will be prompted to log in via the Tidal OAuth2 device flow. Your session is saved to the system keychain (or an age-encrypted file at `~/.config/tidalt/secrets`) and reused on subsequent runs.
@@ -125,4 +130,5 @@ Auto-detection scans `/proc/asound/cards`. Any ALSA-visible device can be select
 - [Architecture & audio pipeline](docs/architecture.md)
 - [DAC compatibility](docs/dac-compatibility.md)
 - [Media keys & MPRIS2 setup](docs/media-keys.md)
+- [Browser URL handler troubleshooting](docs/browser-url-handler.md)
 - [Debugging](docs/debugging.md)
