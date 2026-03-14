@@ -8,8 +8,14 @@ package player
 
 // alsa_open_result carries the negotiated format back to Go.
 typedef struct {
-    snd_pcm_format_t format;
-    int              bytes_per_sample;
+    snd_pcm_format_t  format;
+    int               bytes_per_sample;
+    int               significant_bits; // actual DAC bit depth (e.g. 24 for Scarlett, 32 for S9 Pro Plus)
+    snd_pcm_uframes_t period_size;
+    snd_pcm_uframes_t buffer_size;
+    snd_pcm_uframes_t avail_min;
+    snd_pcm_uframes_t start_threshold;
+    snd_pcm_uframes_t stop_threshold;
 } alsa_open_result_t;
 
 // open_hw_pcm opens an ALSA hw device and negotiates the best available
@@ -69,12 +75,45 @@ static int open_hw_pcm(const char *device,
     rc = snd_pcm_hw_params_set_channels(*handle_out, params, channels);
     if (rc < 0) goto fail;
 
-    // dir=0: exact rate match only — no resampling.
-    rc = snd_pcm_hw_params_set_rate(*handle_out, params, rate, 0);
+    rc = snd_pcm_hw_params_set_rate_near(*handle_out, params, &rate, 0);
     if (rc < 0) goto fail;
+
+    // Match ffmpeg: get max buffer size, set it, then set period to minimum.
+    {
+        snd_pcm_uframes_t buffer_size, period_size;
+        snd_pcm_hw_params_get_buffer_size_max(params, &buffer_size);
+        if (buffer_size > 88200) buffer_size = 88200; // ~2s at 44100Hz
+        rc = snd_pcm_hw_params_set_buffer_size_near(*handle_out, params, &buffer_size);
+        if (rc < 0) goto fail;
+
+        snd_pcm_hw_params_get_period_size_min(params, &period_size, NULL);
+        if (period_size == 0) period_size = buffer_size / 4;
+        rc = snd_pcm_hw_params_set_period_size_near(*handle_out, params, &period_size, NULL);
+        if (rc < 0) goto fail;
+    }
 
     rc = snd_pcm_hw_params(*handle_out, params);
     if (rc < 0) goto fail;
+
+    // Query the hardware's actual significant bit depth (e.g. 24 for a DAC
+    // that uses S32_LE as a 24-bit MSB-aligned container).
+    result->significant_bits = snd_pcm_hw_params_get_sbits(params);
+
+    // Read back period/buffer for logging — use ALSA defaults for sw_params.
+    {
+        snd_pcm_uframes_t period_size, buffer_size;
+        snd_pcm_hw_params_get_period_size(params, &period_size, NULL);
+        snd_pcm_hw_params_get_buffer_size(params, &buffer_size);
+        result->period_size = period_size;
+        result->buffer_size = buffer_size;
+
+        snd_pcm_sw_params_t *sw;
+        snd_pcm_sw_params_alloca(&sw);
+        snd_pcm_sw_params_current(*handle_out, sw);
+        snd_pcm_sw_params_get_avail_min(sw, &result->avail_min);
+        snd_pcm_sw_params_get_start_threshold(sw, &result->start_threshold);
+        snd_pcm_sw_params_get_stop_threshold(sw, &result->stop_threshold);
+    }
 
     return 0;
 
@@ -90,7 +129,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"os"
@@ -100,13 +138,15 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/Benehiko/tidalt/internal/logger"
+
 	"github.com/godbus/dbus/v5"
 	"github.com/mewkiz/flac"
 )
 
 // knownDACs lists substrings to search for in /proc/asound/cards output.
 // First match wins, so order determines priority.
-var knownDACs = []string{"hidizs", "focusrite", "scarlett"}
+var knownDACs = []string{"hidizs", "s9pro", "focusrite", "scarlett"}
 
 // DeviceInfo describes an ALSA playback device.
 type DeviceInfo struct {
@@ -251,10 +291,16 @@ func detectDevice() (string, error) {
 // parseCardNum extracts the card number from an ALSA hw device string like "hw:1,0".
 func parseCardNum(hwDevice string) (int, error) {
 	var card, dev int
-	if _, err := fmt.Sscanf(hwDevice, "hw:%d,%d", &card, &dev); err != nil {
-		return 0, fmt.Errorf("cannot parse card number from %q: %w", hwDevice, err)
+	// Accept "hw:N,M", "plughw:N,M", and "front:N".
+	for _, prefix := range []string{"plughw:%d,%d", "hw:%d,%d"} {
+		if _, err := fmt.Sscanf(hwDevice, prefix, &card, &dev); err == nil {
+			return card, nil
+		}
 	}
-	return card, nil
+	if _, err := fmt.Sscanf(hwDevice, "front:%d", &card); err == nil {
+		return card, nil
+	}
+	return 0, fmt.Errorf("cannot parse card number from %q", hwDevice)
 }
 
 // reserveALSADevice acquires the org.freedesktop.ReserveDevice1.Audio{N} D-Bus
@@ -276,66 +322,47 @@ func reserveALSADevice(cardNum int) (release func(), err error) {
 		_ = conn.Close()
 	}
 
-	// Watch NameOwnerChanged for this name before requesting it, so we don't
-	// miss the signal between RequestRelease returning and us subscribing.
-	sigCh := make(chan *dbus.Signal, 10)
-	conn.Signal(sigCh)
-	if matchErr := conn.AddMatchSignal(
-		dbus.WithMatchInterface("org.freedesktop.DBus"),
-		dbus.WithMatchMember("NameOwnerChanged"),
-		dbus.WithMatchArg(0, name),
-	); matchErr != nil {
-		_ = conn.Close()
-		return func() {}, nil
-	}
-
-	// Enter the queue (NameFlagAllowReplacement lets others ask us to release later).
-	// Not setting DoNotQueue means D-Bus hands us the name automatically when
-	// the current owner releases it — no polling needed.
-	reply, err := conn.RequestName(name, dbus.NameFlagAllowReplacement)
-	if err != nil {
-		_ = conn.Close()
-		return func() {}, nil
-	}
-
-	if reply == dbus.RequestNameReplyPrimaryOwner {
-		return releaseFunc, nil
-	}
-
-	// We are queued. Ask PipeWire to release.
+	// Ask the current owner (WirePlumber) to release the device, then claim
+	// the name ourselves with ReplaceExisting so WirePlumber cannot reopen it.
 	obj := conn.Object(name, objPath)
 	var released bool
 	if callErr := obj.Call("org.freedesktop.ReserveDevice1.RequestRelease", 0, int32(math.MaxInt32)).Store(&released); callErr != nil || !released {
-		releaseFunc()
+		_ = conn.Close()
 		return nil, fmt.Errorf("audio device Audio%d is held by another process and refused to release", cardNum)
 	}
 
-	// Wait for D-Bus to hand us the name (NameOwnerChanged with us as new owner).
-	ourUniqueName := conn.Names()[0]
-	timeout := time.After(3 * time.Second)
-	for {
-		select {
-		case sig := <-sigCh:
-			if len(sig.Body) >= 3 {
-				if newOwner, ok := sig.Body[2].(string); ok && newOwner == ourUniqueName {
-					return releaseFunc, nil
-				}
-			}
-		case <-timeout:
-			releaseFunc()
-			return nil, fmt.Errorf("timeout waiting for Audio%d to be released by PipeWire", cardNum)
-		}
+	// Give WirePlumber a moment to close its ALSA handle before we claim the
+	// name and open the device.
+	time.Sleep(200 * time.Millisecond)
+
+	// Claim the name with ReplaceExisting so we take it even if WirePlumber
+	// still holds it, and AllowReplacement so it can be returned on release.
+	reply, err := conn.RequestName(name,
+		dbus.NameFlagReplaceExisting|dbus.NameFlagAllowReplacement)
+	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
+		_ = conn.Close()
+		return nil, fmt.Errorf("failed to claim Audio%d reservation", cardNum)
 	}
+
+	return releaseFunc, nil
 }
 
 type alsaHandle struct {
-	pcm            *C.snd_pcm_t
-	format         C.snd_pcm_format_t
-	bytesPerSample int
+	pcm             *C.snd_pcm_t
+	format          C.snd_pcm_format_t
+	bytesPerSample  int
+	significantBits int // actual DAC bit depth
+	periodSize      uint64
+	bufferSize      uint64
+	availMin        uint64
+	startThreshold  uint64
+	stopThreshold   uint64
 }
 
 // openALSA opens an ALSA hw device, negotiating the best available format for
 // the source bit depth without enabling soft resampling (bit-perfect).
+// Retries for up to 2 seconds to allow WirePlumber to fully close its handle
+// after releasing the D-Bus reservation.
 func openALSA(device string, channels uint8, rate uint32, bits uint8) (*alsaHandle, error) {
 	cdev := C.CString(device)
 	defer C.free(unsafe.Pointer(cdev))
@@ -352,9 +379,15 @@ func openALSA(device string, channels uint8, rate uint32, bits uint8) (*alsaHand
 	}
 
 	return &alsaHandle{
-		pcm:            handle,
-		format:         result.format,
-		bytesPerSample: int(result.bytes_per_sample),
+		pcm:             handle,
+		format:          result.format,
+		bytesPerSample:  int(result.bytes_per_sample),
+		significantBits: int(result.significant_bits),
+		periodSize:      uint64(result.period_size),
+		bufferSize:      uint64(result.buffer_size),
+		availMin:        uint64(result.avail_min),
+		startThreshold:  uint64(result.start_threshold),
+		stopThreshold:   uint64(result.stop_threshold),
 	}, nil
 }
 
@@ -417,18 +450,30 @@ func (p *Player) stop() {
 }
 
 func (p *Player) playbackLoop(ctx context.Context, url, device string) {
+	logger.L.Debug("playbackLoop start", "url", url)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		logger.L.Error("failed to create HTTP request", "err", err)
 		return
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		logger.L.Error("HTTP request failed", "err", err)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	logger.L.Debug("HTTP response",
+		"status", resp.StatusCode,
+		"content-type", resp.Header.Get("Content-Type"),
+		"content-length", resp.Header.Get("Content-Length"),
+		"content-encoding", resp.Header.Get("Content-Encoding"),
+		"transfer-encoding", resp.Header.Get("Transfer-Encoding"),
+	)
+
 	stream, err := flac.New(resp.Body)
 	if err != nil {
+		logger.L.Error("FLAC decode init failed", "err", err)
 		return
 	}
 
@@ -436,6 +481,14 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 	sampleRate := info.SampleRate
 	channels := info.NChannels
 	bits := info.BitsPerSample
+
+	logger.L.Debug("FLAC stream",
+		"rate", sampleRate,
+		"channels", channels,
+		"bits", bits,
+		"samples", info.NSamples,
+		"content-type", resp.Header.Get("Content-Type"),
+	)
 
 	p.muInfo.Lock()
 	p.sampleRate = sampleRate
@@ -446,8 +499,22 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 
 	ah, err := openALSA(device, channels, sampleRate, bits)
 	if err != nil {
+		logger.L.Error("openALSA failed", "device", device, "err", err)
 		return
 	}
+	logger.L.Debug("ALSA opened",
+		"device", device,
+		"format", ah.format,
+		"bps", ah.bytesPerSample,
+		"significantBits", ah.significantBits,
+		"srcBits", bits,
+		"shift", ah.significantBits-int(bits),
+		"period_size", ah.periodSize,
+		"buffer_size", ah.bufferSize,
+		"avail_min", ah.availMin,
+		"start_threshold", ah.startThreshold,
+		"stop_threshold", ah.stopThreshold,
+	)
 	defer func() {
 		C.snd_pcm_drain(ah.pcm)
 		C.snd_pcm_close(ah.pcm)
@@ -455,15 +522,66 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 
 	bps := ah.bytesPerSample
 
-	for {
-		select {
-		case <-ctx.Done():
-			C.snd_pcm_drop(ah.pcm)
-			return
-		default:
-		}
+	// Decode FLAC frames on a separate goroutine so network I/O stalls don't
+	// block the ALSA write loop. The channel holds pre-encoded PCM buffers.
+	type pcmBuf struct {
+		data    []byte
+		nFrames int
+	}
+	pcmCh := make(chan pcmBuf, 4)
 
-		// Pause: sleep in place without advancing the FLAC stream.
+	go func() {
+		defer close(pcmCh)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			frame, ferr := stream.ParseNext()
+			if ferr != nil {
+				logger.L.Debug("FLAC decode done", "err", ferr)
+				return
+			}
+
+			n := int(frame.BlockSize)
+			buf := make([]byte, n*int(channels)*bps)
+			vol := math.Float64frombits(atomic.LoadUint64(&p.volumeBits))
+
+			for i := 0; i < n; i++ {
+				for ch := 0; ch < int(channels); ch++ {
+					s := frame.Subframes[ch].Samples[i]
+					if vol != 1.0 {
+						s = int32(float64(s) * vol)
+					}
+					off := (i*int(channels) + ch) * bps
+					switch ah.format {
+					case C.SND_PCM_FORMAT_S16_LE:
+						binary.LittleEndian.PutUint16(buf[off:], uint16(int16(s)))
+					case C.SND_PCM_FORMAT_S24_3LE:
+						buf[off] = byte(s)
+						buf[off+1] = byte(s >> 8)
+						buf[off+2] = byte(s >> 16)
+					case C.SND_PCM_FORMAT_S24_LE:
+						shift := uint(ah.significantBits - int(bits))
+						binary.LittleEndian.PutUint32(buf[off:], uint32(int32(s)<<shift))
+					case C.SND_PCM_FORMAT_S32_LE:
+						shift := uint(ah.significantBits - int(bits))
+						binary.LittleEndian.PutUint32(buf[off:], uint32(int32(s)<<shift))
+					}
+				}
+			}
+
+			select {
+			case pcmCh <- pcmBuf{data: buf, nFrames: n}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	for pcm := range pcmCh {
 		for atomic.LoadUint32(&p.paused) == 1 {
 			select {
 			case <-ctx.Done():
@@ -473,53 +591,24 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 			}
 		}
 
-		frame, err := stream.ParseNext()
-		if err == io.EOF {
+		select {
+		case <-ctx.Done():
+			C.snd_pcm_drop(ah.pcm)
 			return
-		}
-		if err != nil {
-			return
+		default:
 		}
 
-		n := int(frame.BlockSize)
-		buf := make([]byte, n*int(channels)*bps)
-		vol := math.Float64frombits(atomic.LoadUint64(&p.volumeBits))
-
-		for i := 0; i < n; i++ {
-			for ch := 0; ch < int(channels); ch++ {
-				s := frame.Subframes[ch].Samples[i]
-				if vol != 1.0 {
-					s = int32(float64(s) * vol)
-				}
-				off := (i*int(channels) + ch) * bps
-				switch ah.format {
-				case C.SND_PCM_FORMAT_S16_LE:
-					binary.LittleEndian.PutUint16(buf[off:], uint16(int16(s)))
-				case C.SND_PCM_FORMAT_S24_3LE:
-					buf[off] = byte(s)
-					buf[off+1] = byte(s >> 8)
-					buf[off+2] = byte(s >> 16)
-				case C.SND_PCM_FORMAT_S24_LE:
-					// 24-bit signed in a 4-byte container; upper byte is sign extension.
-					// s is already sign-extended to int32 by the FLAC decoder.
-					binary.LittleEndian.PutUint32(buf[off:], uint32(s))
-				case C.SND_PCM_FORMAT_S32_LE:
-					// Shift source content into the MSBs of the 32-bit container.
-					shift := uint(32 - bits)
-					binary.LittleEndian.PutUint32(buf[off:], uint32(s<<shift))
-				}
-			}
-		}
-
-		// Write frames to ALSA, retrying after xrun recovery.
-		framesLeft := C.snd_pcm_uframes_t(n)
+		framesLeft := C.snd_pcm_uframes_t(pcm.nFrames)
 		framesDone := C.snd_pcm_uframes_t(0)
 		for framesLeft > 0 {
 			off := int(framesDone) * int(channels) * bps
-			written := C.snd_pcm_writei(ah.pcm, unsafe.Pointer(&buf[off]), framesLeft)
+			written := C.snd_pcm_writei(ah.pcm, unsafe.Pointer(&pcm.data[off]), framesLeft)
 			if written < 0 {
-				// snd_pcm_recover handles EPIPE (underrun) and ESTRPIPE (suspend).
-				if C.snd_pcm_recover(ah.pcm, C.int(written), C.int(1)) < 0 {
+				errStr := C.GoString(C.snd_strerror(C.int(written)))
+				logger.L.Warn("snd_pcm_writei error, recovering", "err", errStr)
+				if rc := C.snd_pcm_recover(ah.pcm, C.int(written), C.int(1)); rc < 0 {
+					logger.L.Error("snd_pcm_recover failed, stopping playback",
+						"err", C.GoString(C.snd_strerror(rc)))
 					return
 				}
 				continue
@@ -528,7 +617,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 			framesDone += C.snd_pcm_uframes_t(written)
 		}
 
-		atomic.AddUint64(&p.samplesPlayed, uint64(n))
+		atomic.AddUint64(&p.samplesPlayed, uint64(pcm.nFrames))
 	}
 }
 
