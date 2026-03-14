@@ -17,17 +17,6 @@ linters:
   settings:
     revive:
       severity: warning
-  exclusions:
-    rules:
-      - path: "internal/player/"
-        linters:
-          - typecheck
-          - errcheck
-          - govet
-          - ineffassign
-          - staticcheck
-          - unused
-          - revive
 
 formatters:
   enable:
