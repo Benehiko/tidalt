@@ -387,7 +387,11 @@ func (m Model) View() string {
 
 	// Player Status
 	if m.currentTrack != nil {
-		s += headerStyle.Render(fmt.Sprintf("Playing: %s - %s", m.currentTrack.Title, m.currentTrack.Artist.Name)) + "\n"
+		status := "Playing"
+		if !m.isPlaying {
+			status = "Paused"
+		}
+		s += headerStyle.Render(fmt.Sprintf("%s: %s - %s", status, m.currentTrack.Title, m.currentTrack.Artist.Name)) + "\n"
 		percent := 0.0
 		if m.duration > 0 {
 			percent = m.currPos / m.duration
