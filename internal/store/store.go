@@ -15,6 +15,11 @@ import (
 	"go.etcd.io/bbolt"
 )
 
+// PassphraseFunc is called to obtain a passphrase for encrypting or decrypting
+// the age-encrypted fallback store. The prompt string describes what is being
+// asked (e.g. "Enter passphrase" vs "Confirm passphrase").
+type PassphraseFunc func(ctx context.Context, prompt string) ([]byte, error)
+
 const (
 	ServiceName = "tidalt"
 	AccountName = "session"
@@ -54,7 +59,7 @@ func tidalSecretFactory(ctx context.Context, id store.ID) *tidalSecret {
 	return &tidalSecret{}
 }
 
-func NewSecretsStore() *SecretsStore {
+func NewSecretsStore(passphrase PassphraseFunc) *SecretsStore {
 	var s store.Store
 	var err error
 
@@ -63,7 +68,7 @@ func NewSecretsStore() *SecretsStore {
 	if err != nil {
 		fmt.Printf("Warning: failed to initialize keychain: %v. Falling back to posixage.\n", err)
 
-		// 2. Fallback to Posixage
+		// 2. Fallback to Posixage — requires encryption/decryption callbacks.
 		home, _ := os.UserHomeDir()
 		storePath := filepath.Join(home, ".config", ServiceName, "secrets")
 		_ = os.MkdirAll(storePath, 0o700)
@@ -72,7 +77,16 @@ func NewSecretsStore() *SecretsStore {
 		if rErr != nil {
 			fmt.Printf("Error: failed to open root for posixage: %v\n", rErr)
 		} else {
-			s, err = posixage.New[*tidalSecret](root, tidalSecretFactory)
+			encryptFn := posixage.EncryptionPassword(func(ctx context.Context) ([]byte, error) {
+				return passphrase(ctx, "Enter passphrase for secret store")
+			})
+			decryptFn := posixage.DecryptionPassword(func(ctx context.Context) ([]byte, error) {
+				return passphrase(ctx, "Enter passphrase for secret store")
+			})
+			s, err = posixage.New[*tidalSecret](root, tidalSecretFactory,
+				posixage.WithEncryptionCallbackFunc(encryptFn),
+				posixage.WithDecryptionCallbackFunc(decryptFn),
+			)
 			if err != nil {
 				fmt.Printf("Error: failed to initialize posixage: %v\n", err)
 			}

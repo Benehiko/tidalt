@@ -97,13 +97,12 @@ type Model struct {
 	shufflePlayed []int         // indices already played (for ShuffleRandom deduplication)
 }
 
-func InitialModel(ctx context.Context, client *tidal.Client, mprisCh <-chan mpris.Cmd) Model {
+func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsStore, mprisCh <-chan mpris.Cmd) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search for a song..."
 	ti.CharLimit = 156
 	ti.Width = 30
 
-	s := store.NewSecretsStore()
 	p := player.NewPlayer()
 
 	vol := 50.0
