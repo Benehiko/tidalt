@@ -89,7 +89,7 @@ type Model struct {
 	logoFrame int
 
 	// MPRIS media key commands
-	mprisCh <-chan mpris.Cmd
+	mprisCh <-chan mpris.Event
 
 	// Favorited track IDs (populated from GetFavorites; toggled by "f")
 	favorites map[int]bool
@@ -98,9 +98,13 @@ type Model struct {
 	shuffleMode   ShuffleMode
 	tracksOrder   []tidal.Track // original order, saved when shuffle is enabled
 	shufflePlayed []int         // indices already played (for ShuffleRandom deduplication)
+
+	// openURL is a tidal:// or https://tidal.com/ URL passed at startup (e.g. from
+	// "Open in desktop app"). Consumed once during Init.
+	openURL string
 }
 
-func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsStore, mprisCh <-chan mpris.Cmd) Model {
+func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsStore, mprisCh <-chan mpris.Event, openURL string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search for a song..."
 	ti.CharLimit = 156
@@ -132,6 +136,7 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 		progress:      progress.New(progress.WithDefaultGradient()),
 		mprisCh:       mprisCh,
 		favorites:     make(map[int]bool),
+		openURL:       openURL,
 	}
 }
 
@@ -141,12 +146,13 @@ type (
 	favoritesLoadedMsg []tidal.Track
 	mixesMsg           []tidal.Mix
 	searchResultsMsg   []tidal.Track
+	openURLTracksMsg   []tidal.Track // tracks resolved from a startup tidal:// URL
 	errMsg             error
 	clearErrMsg        struct{}
 	tickMsg            time.Time
 	nowPlayingMsg      struct{ done <-chan struct{} }
 	trackDoneMsg       struct{}
-	mprisMsg           mpris.Cmd
+	mprisMsg           mpris.Event
 	favoriteMsg        struct {
 		trackID int
 		added   bool
@@ -205,25 +211,43 @@ func (m *Model) nextIndex() int {
 	}
 }
 
+// tidalURLID extracts the last path segment (before any query string) from a
+// URL string, which is the resource ID for Tidal API calls.
+func tidalURLID(rawURL string) string {
+	// Strip query string.
+	if i := strings.IndexByte(rawURL, '?'); i >= 0 {
+		rawURL = rawURL[:i]
+	}
+	parts := strings.Split(strings.TrimRight(rawURL, "/"), "/")
+	return parts[len(parts)-1]
+}
+
 // resolveQuery turns a search query into a list of tracks.
 // It handles:
-//   - Tidal track URLs  (tidal.com/track/ID)
-//   - Tidal album URLs  (tidal.com/album/ID)
-//   - Plain text        (title, artist, album — Tidal search covers all three)
+//   - tidal:// deep-link URLs (tidal://track/ID, tidal://album/ID, tidal://mix/ID)
+//   - Tidal web URLs         (tidal.com/browse/track/ID, etc.)
+//   - Plain text             (title, artist, album — Tidal search covers all three)
 func resolveQuery(ctx context.Context, client *tidal.Client, query string) ([]tidal.Track, error) {
-	if strings.Contains(query, "tidal.com/track/") {
-		parts := strings.Split(query, "/")
-		trackID := strings.Split(parts[len(parts)-1], "?")[0]
-		track, err := client.GetTrack(ctx, trackID)
+	// Normalise tidal:// deep links to a recognisable path so the checks below work.
+	// tidal://track/12345  →  tidal.com/track/12345
+	// tidal://album/67890  →  tidal.com/album/67890
+	// tidal://mix/abcdef   →  tidal.com/mix/abcdef
+	if strings.HasPrefix(query, "tidal://") {
+		query = "tidal.com/" + strings.TrimPrefix(query, "tidal://")
+	}
+
+	if strings.Contains(query, "tidal.com/") && strings.Contains(query, "/track/") {
+		track, err := client.GetTrack(ctx, tidalURLID(query))
 		if err != nil {
 			return nil, err
 		}
 		return []tidal.Track{*track}, nil
 	}
-	if strings.Contains(query, "tidal.com/album/") {
-		parts := strings.Split(query, "/")
-		albumID := strings.Split(parts[len(parts)-1], "?")[0]
-		return client.GetAlbumTracks(ctx, albumID)
+	if strings.Contains(query, "tidal.com/") && strings.Contains(query, "/album/") {
+		return client.GetAlbumTracks(ctx, tidalURLID(query))
+	}
+	if strings.Contains(query, "tidal.com/") && strings.Contains(query, "/mix/") {
+		return client.GetMixTracks(ctx, tidalURLID(query))
 	}
 	return client.Search(ctx, query)
 }
@@ -245,21 +269,21 @@ func waitForTrackDone(done <-chan struct{}) tea.Cmd {
 	}
 }
 
-// listenMPRIS returns a command that blocks until the next MPRIS media-key
-// command arrives, then re-registers itself so the stream continues.
-func listenMPRIS(ch <-chan mpris.Cmd) tea.Cmd {
+// listenMPRIS returns a command that blocks until the next MPRIS event
+// arrives, then re-registers itself so the stream continues.
+func listenMPRIS(ch <-chan mpris.Event) tea.Cmd {
 	return func() tea.Msg {
-		cmd, ok := <-ch
+		ev, ok := <-ch
 		if !ok {
 			// Channel closed — MPRIS server shut down; stop listening.
 			return nil
 		}
-		return mprisMsg(cmd)
+		return mprisMsg(ev)
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		func() tea.Msg {
 			tracks, err := m.client.GetFavorites(m.ctx, 50)
 			if err != nil {
@@ -277,7 +301,18 @@ func (m Model) Init() tea.Cmd {
 		m.waitForContextCancel(),
 		tickCmd(),
 		listenMPRIS(m.mprisCh),
-	)
+	}
+	if m.openURL != "" {
+		u := m.openURL
+		cmds = append(cmds, func() tea.Msg {
+			tracks, err := resolveQuery(m.ctx, m.client, u)
+			if err != nil {
+				return errMsg(err)
+			}
+			return openURLTracksMsg(tracks)
+		})
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) waitForContextCancel() tea.Cmd {
@@ -630,6 +665,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			delete(m.favorites, msg.trackID)
 		}
 
+	case openURLTracksMsg:
+		if len(msg) == 0 {
+			break
+		}
+		m.tracksOrder = msg
+		m.shuffleMode = ShuffleOff
+		m.applyShuffle()
+		m.state = StateBrowse
+		m.cursor = 0
+		// Auto-play the first track.
+		track := m.tracks[0]
+		m.currentTrack = &track
+		m.isPlaying = true
+		m.advancing = false
+		_ = m.store.CacheTrack(track.ID, track)
+		return m, func() tea.Msg {
+			url, err := m.client.GetStreamURL(m.ctx, track.ID)
+			if err != nil {
+				return errMsg(err)
+			}
+			done, err := m.player.Play(url)
+			if err != nil {
+				return errMsg(err)
+			}
+			return nowPlayingMsg{done: done}
+		}
+
 	case mixesMsg:
 		m.mixes = msg
 
@@ -641,7 +703,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.errText = ""
 
 	case mprisMsg:
-		switch mpris.Cmd(msg) {
+		ev := mpris.Event(msg)
+		switch ev.Cmd {
 		case mpris.CmdPlayPause:
 			_ = m.player.Pause()
 			m.isPlaying = !m.isPlaying
@@ -694,6 +757,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, tea.Batch(play, listenMPRIS(m.mprisCh))
 			}
+		case mpris.CmdOpenURL:
+			u := ev.URL
+			return m, tea.Batch(
+				func() tea.Msg {
+					tracks, err := resolveQuery(m.ctx, m.client, u)
+					if err != nil {
+						return errMsg(err)
+					}
+					return openURLTracksMsg(tracks)
+				},
+				listenMPRIS(m.mprisCh),
+			)
 		}
 		return m, listenMPRIS(m.mprisCh)
 	}

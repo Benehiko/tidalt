@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=tidalt
+Comment=Tidal music player (terminal)
+Exec=tidalt %u
+Terminal=true
+Type=Application
+Categories=Audio;Music;Player;
+MimeType=x-scheme-handler/tidal;
+Keywords=Music;Audio;Tidal;

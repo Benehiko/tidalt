@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -50,6 +51,20 @@ func trimNewline(b []byte) []byte {
 }
 
 func main() {
+	// Dispatch subcommands before anything else so they don't require a session.
+	if len(os.Args) > 1 && os.Args[1] == "setup" {
+		runSetup()
+		return
+	}
+
+	// Anything else in os.Args[1] is treated as an optional tidal:// or
+	// https://tidal.com/ URL (passed by the OS when the user clicks
+	// "Open in desktop app").
+	var openURL string
+	if len(os.Args) > 1 {
+		openURL = os.Args[1]
+	}
+
 	// Handle interrupt signals
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -89,8 +104,20 @@ func main() {
 		fmt.Printf("Restored session for User %d (Country: %s)\n", session.UserID, session.CountryCode)
 	}
 
-	// 3. Start MPRIS2 server (non-fatal if no session bus)
+	// 3. Start MPRIS2 server.
+	// If another instance is already running, forward the URL to it and exit.
 	mprisServer, mprisErr := mpris.Start(ctx)
+	if errors.Is(mprisErr, mpris.ErrAlreadyRunning) {
+		if openURL == "" {
+			fmt.Println("tidalt is already running.")
+			os.Exit(0)
+		}
+		if err := mpris.SendURL(openURL); err != nil {
+			fmt.Printf("Failed to forward URL to running instance: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if mprisErr != nil {
 		fmt.Printf("MPRIS unavailable: %v\n", mprisErr)
 	}
@@ -98,7 +125,7 @@ func main() {
 	// 4. Launch TUI — vault is passed in so it is not re-created inside the TUI
 	// (re-creating it after the terminal is in raw mode would prevent passphrase prompts).
 	// The TUI model takes ownership of vault and closes it on quit.
-	p := tea.NewProgram(ui.InitialModel(ctx, client, vault, mprisServer.Commands), tea.WithAltScreen())
+	p := tea.NewProgram(ui.InitialModel(ctx, client, vault, mprisServer.Commands, openURL), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)

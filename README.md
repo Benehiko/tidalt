@@ -10,9 +10,7 @@ A terminal UI for Tidal that delivers **bit-perfect, lossless audio** directly t
 
 ## Install
 
-```bash
-go install github.com/Benehiko/tidalt/cmd/tidalt@latest
-```
+### Dependencies
 
 Requires Go 1.21+ and ALSA development headers:
 
@@ -21,6 +19,31 @@ sudo pacman -S alsa-lib        # Arch
 sudo apt install libasound2-dev # Debian / Ubuntu
 sudo dnf install alsa-lib-devel # Fedora
 ```
+
+### Install
+
+```bash
+go install github.com/Benehiko/tidalt/cmd/tidalt@latest
+```
+
+### Register the tidal:// URL handler
+
+The `setup` subcommand installs the `.desktop` file and registers the
+`tidal://` scheme so clicking **"Open in desktop app"** on tidal.com opens
+the track directly in tidalt. It prints every action before running it:
+
+```
+$ tidalt setup
+  -> Creating directory /home/user/.local/share/applications
+  -> Writing /home/user/.local/share/applications/tidalt.desktop
+  -> $ xdg-mime default tidalt.desktop x-scheme-handler/tidal
+  -> $ update-desktop-database /home/user/.local/share/applications
+
+Setup complete.
+Clicking "Open in desktop app" on tidal.com will now open tidalt.
+```
+
+---
 
 On first launch you will be prompted to log in via the Tidal OAuth2 device flow. Your session is saved to the system keychain (or an age-encrypted file at `~/.config/tidalt/secrets`) and reused on subsequent runs.
 
