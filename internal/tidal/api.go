@@ -62,6 +62,10 @@ type FavoritesResponse struct {
 	} `json:"items"`
 }
 
+type radioResponse struct {
+	Items []Track `json:"items"`
+}
+
 // v2 JSON:API types for mixes and playlist items.
 
 type v2ResourceIdentifier struct {
@@ -220,6 +224,31 @@ func (c *Client) GetFavorites(ctx context.Context, limit int) ([]Track, error) {
 		tracks[i] = item.Item
 	}
 	return tracks, nil
+}
+
+func (c *Client) GetTrackRadio(ctx context.Context, trackID int) ([]Track, error) {
+	params := url.Values{}
+	params.Set("limit", "100")
+	params.Set("countryCode", c.Session.CountryCode)
+
+	client := c.GetAuthClient(ctx)
+	u := fmt.Sprintf("%s/tracks/%d/radio?%s", BaseURL, trackID, params.Encode())
+	resp, err := client.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to get track radio (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var res radioResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+	return res.Items, nil
 }
 
 func (c *Client) AddFavorite(ctx context.Context, trackID int) error {

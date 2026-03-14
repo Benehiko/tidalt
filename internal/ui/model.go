@@ -328,6 +328,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.player.SetVolume(m.volume)
 			_ = m.store.SaveVolume(m.volume)
 
+		case "r":
+			if m.state != StateDeviceSelect && len(m.tracks) > 0 {
+				track := m.tracks[m.cursor]
+				return m, func() tea.Msg {
+					tracks, err := m.client.GetTrackRadio(m.ctx, track.ID)
+					if err != nil {
+						return errMsg(err)
+					}
+					return tracksMsg(tracks)
+				}
+			}
+
 		case "f":
 			if m.state != StateDeviceSelect && len(m.tracks) > 0 {
 				track := m.tracks[m.cursor]
@@ -680,7 +692,7 @@ func (m Model) View() string {
 				s += line + "\n"
 			}
 		}
-		s += "\n [TAB] Switch Tab | [ENTER] Play/Select | [SPACE] Pause | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
+		s += "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [r] Radio | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
 	}
 
 	return s
