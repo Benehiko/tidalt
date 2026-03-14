@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -16,6 +17,26 @@ import (
 	"github.com/Benehiko/tidalt/internal/store"
 	"github.com/Benehiko/tidalt/internal/tidal"
 )
+
+// ShuffleMode controls how the track list is shuffled.
+type ShuffleMode int
+
+const (
+	ShuffleOff         ShuffleMode = iota // original order
+	ShuffleRandom                         // random pick on each advance
+	ShuffleFisherYates                    // pre-shuffled with Fisher-Yates
+)
+
+func (s ShuffleMode) String() string {
+	switch s {
+	case ShuffleRandom:
+		return "Random"
+	case ShuffleFisherYates:
+		return "Shuffle"
+	default:
+		return "Off"
+	}
+}
 
 type State int
 
@@ -69,6 +90,11 @@ type Model struct {
 
 	// Favorited track IDs (populated from GetFavorites; toggled by "f")
 	favorites map[int]bool
+
+	// Shuffle
+	shuffleMode   ShuffleMode
+	tracksOrder   []tidal.Track // original order, saved when shuffle is enabled
+	shufflePlayed []int         // indices already played (for ShuffleRandom deduplication)
 }
 
 func InitialModel(ctx context.Context, client *tidal.Client, mprisCh <-chan mpris.Cmd) Model {
@@ -122,6 +148,58 @@ type (
 		added   bool
 	}
 )
+
+// applyShuffle reorders m.tracks according to the current shuffle mode and
+// resets the played-index history. Call whenever the mode changes or a new
+// track list is loaded.
+func (m *Model) applyShuffle() {
+	switch m.shuffleMode {
+	case ShuffleFisherYates:
+		shuffled := make([]tidal.Track, len(m.tracksOrder))
+		copy(shuffled, m.tracksOrder)
+		rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+		m.tracks = shuffled
+	default:
+		m.tracks = make([]tidal.Track, len(m.tracksOrder))
+		copy(m.tracks, m.tracksOrder)
+	}
+	m.shufflePlayed = nil
+}
+
+// nextIndex returns the index of the next track to play given the current
+// cursor and shuffle mode. Returns -1 if there is no next track.
+func (m *Model) nextIndex() int {
+	if len(m.tracks) == 0 {
+		return -1
+	}
+	switch m.shuffleMode {
+	case ShuffleRandom:
+		// Pick a random index that has not been played yet.
+		played := make(map[int]bool, len(m.shufflePlayed))
+		for _, i := range m.shufflePlayed {
+			played[i] = true
+		}
+		// Build candidate list.
+		var candidates []int
+		for i := range m.tracks {
+			if !played[i] {
+				candidates = append(candidates, i)
+			}
+		}
+		if len(candidates) == 0 {
+			return -1
+		}
+		return candidates[rand.IntN(len(candidates))]
+	default:
+		// ShuffleOff and ShuffleFisherYates both advance linearly through
+		// the (possibly pre-shuffled) slice.
+		next := m.cursor + 1
+		if next < len(m.tracks) {
+			return next
+		}
+		return -1
+	}
+}
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
@@ -328,6 +406,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.player.SetVolume(m.volume)
 			_ = m.store.SaveVolume(m.volume)
 
+		case "s":
+			if m.state != StateDeviceSelect {
+				// Cycle: Off → Fisher-Yates → Random → Off
+				switch m.shuffleMode {
+				case ShuffleOff:
+					m.shuffleMode = ShuffleFisherYates
+				case ShuffleFisherYates:
+					m.shuffleMode = ShuffleRandom
+				default:
+					m.shuffleMode = ShuffleOff
+				}
+				m.applyShuffle()
+				m.cursor = 0
+			}
+
 		case "r":
 			if m.state != StateDeviceSelect && len(m.tracks) > 0 {
 				track := m.tracks[m.cursor]
@@ -382,8 +475,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case trackDoneMsg:
 		if !m.advancing {
-			next := m.cursor + 1
-			if next < len(m.tracks) {
+			m.shufflePlayed = append(m.shufflePlayed, m.cursor)
+			next := m.nextIndex()
+			if next >= 0 {
 				m.advancing = true
 				m.cursor = next
 				track := m.tracks[next]
@@ -408,7 +502,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case favoritesLoadedMsg:
 		tracks := []tidal.Track(msg)
-		m.tracks = tracks
+		m.tracksOrder = tracks
+		m.shuffleMode = ShuffleOff
+		m.applyShuffle()
 		m.state = StateBrowse
 		m.cursor = 0
 		for _, t := range tracks {
@@ -416,7 +512,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tracksMsg:
-		m.tracks = msg
+		m.tracksOrder = msg
+		m.shuffleMode = ShuffleOff
+		m.applyShuffle()
 		m.state = StateBrowse
 		m.searchInput.Blur()
 		m.cursor = 0
@@ -441,8 +539,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.isPlaying = !m.isPlaying
 		case mpris.CmdNext:
 			if !m.advancing {
-				next := m.cursor + 1
-				if next < len(m.tracks) {
+				m.shufflePlayed = append(m.shufflePlayed, m.cursor)
+				next := m.nextIndex()
+				if next >= 0 {
 					m.advancing = true
 					m.cursor = next
 					track := m.tracks[next]
@@ -602,7 +701,7 @@ func (m Model) View() string {
 	if m.currentDevice != "" {
 		deviceLabel = m.currentDevice
 	}
-	s += fmt.Sprintf("  Volume: %.0f%%   Device: %s\n\n", m.volume, deviceLabel)
+	s += fmt.Sprintf("  Volume: %.0f%%   Device: %s   Shuffle: %s\n\n", m.volume, deviceLabel, m.shuffleMode)
 
 	// Tabs
 	tabs := []string{"My Music", "Daily Mixes", "Search"}
@@ -692,7 +791,7 @@ func (m Model) View() string {
 				s += line + "\n"
 			}
 		}
-		s += "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [r] Radio | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
+		s += "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [s] Shuffle | [r] Radio | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
 	}
 
 	return s

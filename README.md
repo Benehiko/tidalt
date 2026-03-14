@@ -150,6 +150,7 @@ Your session is saved securely — to the system keychain where available, other
 | `↓` / `j` | Move cursor down |
 | `Enter` | Play selected track / load mix / confirm |
 | `Space` | Pause / resume |
+| `s` | Cycle shuffle mode (Off → Shuffle → Random) |
 | `r` | Load radio playlist for selected track |
 | `f` | Toggle favorite on selected track |
 | `9` | Volume down 5% |
