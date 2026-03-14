@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"strings"
@@ -88,7 +89,7 @@ type Model struct {
 	// Logo animation
 	logoFrame int
 
-	// MPRIS media key commands
+	// MPRIS media key commands (nil in client mode)
 	mprisCh <-chan mpris.Event
 
 	// Favorited track IDs (populated from GetFavorites; toggled by "f")
@@ -102,9 +103,17 @@ type Model struct {
 	// openURL is a tidal:// or https://tidal.com/ URL passed at startup (e.g. from
 	// "Open in desktop app"). Consumed once during Init.
 	openURL string
+
+	// clientMode is true when a parent tidalt instance is already running.
+	// Playback commands are forwarded over D-Bus instead of driving the local player.
+	clientMode  bool
+	mprisClient *mpris.Client
+
+	// mprisServer is non-nil in normal mode; used to push live state to clients.
+	mprisServer *mpris.Server
 }
 
-func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsStore, mprisCh <-chan mpris.Event, openURL string) Model {
+func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsStore, srv *mpris.Server, openURL string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search for a song..."
 	ti.CharLimit = 156
@@ -124,6 +133,11 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 		p.SetDevice(dev)
 	}
 
+	var mprisCh <-chan mpris.Event
+	if srv != nil {
+		mprisCh = srv.Commands
+	}
+
 	return Model{
 		ctx:           ctx,
 		client:        client,
@@ -137,6 +151,36 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 		mprisCh:       mprisCh,
 		favorites:     make(map[int]bool),
 		openURL:       openURL,
+		mprisServer:   srv,
+	}
+}
+
+// ClientModel creates a TUI model that forwards all playback actions to an
+// already-running tidalt instance via the provided mprisClient. The local
+// player is not started. The UI is tinted to indicate client mode.
+func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStore, mprisClient *mpris.Client, openURL string) Model {
+	ti := textinput.New()
+	ti.Placeholder = "Search for a song..."
+	ti.CharLimit = 156
+	ti.Width = 30
+
+	vol := 50.0
+	if v, err := s.LoadVolume(); err == nil {
+		vol = v
+	}
+
+	return Model{
+		ctx:         ctx,
+		client:      client,
+		store:       s,
+		searchInput: ti,
+		state:       StateBrowse,
+		volume:      vol,
+		progress:    progress.New(progress.WithDefaultGradient()),
+		favorites:   make(map[int]bool),
+		openURL:     openURL,
+		clientMode:  true,
+		mprisClient: mprisClient,
 	}
 }
 
@@ -157,6 +201,8 @@ type (
 		trackID int
 		added   bool
 	}
+	// parentStateMsg carries the live state polled from the parent instance.
+	parentStateMsg mpris.PlayerState
 )
 
 // applyShuffle reorders m.tracks according to the current shuffle mode and
@@ -208,6 +254,40 @@ func (m *Model) nextIndex() int {
 			return next
 		}
 		return -1
+	}
+}
+
+// playTrackCmd returns a tea.Cmd that starts playback of track.
+// In normal mode it streams via the local player and returns nowPlayingMsg.
+// In client mode it resolves the stream URL and forwards it to the parent
+// instance via MPRIS, then returns nil (no local playback state to track).
+func (m *Model) playTrackCmd(track tidal.Track) tea.Cmd {
+	if m.clientMode {
+		mc := m.mprisClient
+		return func() tea.Msg {
+			url, err := m.client.GetStreamURL(m.ctx, track.ID)
+			if err != nil {
+				return errMsg(err)
+			}
+			if err := mc.SendURL(url); err != nil {
+				return errMsg(err)
+			}
+			return nil
+		}
+	}
+	m.currentTrack = &track
+	m.isPlaying = true
+	m.advancing = false
+	return func() tea.Msg {
+		url, err := m.client.GetStreamURL(m.ctx, track.ID)
+		if err != nil {
+			return errMsg(err)
+		}
+		done, err := m.player.Play(url)
+		if err != nil {
+			return errMsg(err)
+		}
+		return nowPlayingMsg{done: done}
 	}
 }
 
@@ -300,7 +380,11 @@ func (m Model) Init() tea.Cmd {
 		},
 		m.waitForContextCancel(),
 		tickCmd(),
-		listenMPRIS(m.mprisCh),
+	}
+	if !m.clientMode {
+		cmds = append(cmds, listenMPRIS(m.mprisCh))
+	} else {
+		cmds = append(cmds, pollParentState(m.mprisClient))
 	}
 	if m.openURL != "" {
 		u := m.openURL
@@ -318,9 +402,35 @@ func (m Model) Init() tea.Cmd {
 func (m Model) waitForContextCancel() tea.Cmd {
 	return func() tea.Msg {
 		<-m.ctx.Done()
-		m.player.Close()
+		if m.player != nil {
+			m.player.Close()
+		}
 		m.store.Close()
 		return tea.Quit()
+	}
+}
+
+// pushState publishes the current track and playlist to the MPRIS server so
+// client instances can read it. Called whenever playback state changes.
+func (m *Model) pushState() {
+	if m.mprisServer == nil {
+		return
+	}
+	trackJSON := mpris.MarshalTracks(m.currentTrack)
+	playlistJSON := mpris.MarshalTracks(m.tracks)
+	m.mprisServer.SetState(trackJSON, playlistJSON, m.isPlaying)
+}
+
+// pollParentState returns a tea.Cmd that fetches the parent's state once and
+// delivers it as a parentStateMsg. Used by the client TUI on each tick.
+func pollParentState(mc *mpris.Client) tea.Cmd {
+	return func() tea.Msg {
+		ps, err := mc.GetState()
+		if err != nil {
+			// Parent may have gone away; deliver an empty state rather than an error.
+			return parentStateMsg{}
+		}
+		return parentStateMsg(ps)
 	}
 }
 
@@ -416,22 +526,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Enter on a search result — play it
 			if m.state == StateSearch && len(m.searchTracks) > 0 {
 				track := m.searchTracks[m.searchCursor]
-				m.currentTrack = &track
-				m.isPlaying = true
-				m.advancing = false
 				_ = m.store.CacheTrack(track.ID, track)
-				play := func() tea.Msg {
-					url, err := m.client.GetStreamURL(m.ctx, track.ID)
-					if err != nil {
-						return errMsg(err)
-					}
-					done, err := m.player.Play(url)
-					if err != nil {
-						return errMsg(err)
-					}
-					return nowPlayingMsg{done: done}
-				}
-				return m, play
+				return m, m.playTrackCmd(track)
 			}
 			if m.state == StateMixes && len(m.mixes) > 0 {
 				mix := m.mixes[m.cursor]
@@ -445,24 +541,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if len(m.tracks) > 0 {
 				track := m.tracks[m.cursor]
-				m.currentTrack = &track
-				m.isPlaying = true
-				m.advancing = false
-				// Cache track metadata
 				_ = m.store.CacheTrack(track.ID, track)
-
-				play := func() tea.Msg {
-					url, err := m.client.GetStreamURL(m.ctx, track.ID)
-					if err != nil {
-						return errMsg(err)
-					}
-					done, err := m.player.Play(url)
-					if err != nil {
-						return errMsg(err)
-					}
-					return nowPlayingMsg{done: done}
-				}
-				return m, play
+				return m, m.playTrackCmd(track)
 			}
 
 		case "up", "k":
@@ -498,23 +578,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case " ":
+			if m.clientMode {
+				mc := m.mprisClient
+				return m, func() tea.Msg {
+					if err := mc.SendPlayPause(); err != nil {
+						return errMsg(err)
+					}
+					return nil
+				}
+			}
 			_ = m.player.Pause()
 			m.isPlaying = !m.isPlaying
+			m.pushState()
 
 		case "9":
-			m.volume -= 5
-			if m.volume < 0 {
-				m.volume = 0
+			if !m.clientMode {
+				m.volume -= 5
+				if m.volume < 0 {
+					m.volume = 0
+				}
+				_ = m.player.SetVolume(m.volume)
+				_ = m.store.SaveVolume(m.volume)
 			}
-			_ = m.player.SetVolume(m.volume)
-			_ = m.store.SaveVolume(m.volume)
 		case "0":
-			m.volume += 5
-			if m.volume > 100 {
-				m.volume = 100
+			if !m.clientMode {
+				m.volume += 5
+				if m.volume > 100 {
+					m.volume = 100
+				}
+				_ = m.player.SetVolume(m.volume)
+				_ = m.store.SaveVolume(m.volume)
 			}
-			_ = m.player.SetVolume(m.volume)
-			_ = m.store.SaveVolume(m.volume)
 
 		case "s":
 			if m.state != StateDeviceSelect {
@@ -592,15 +686,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case nowPlayingMsg:
 		m.advancing = false
+		m.pushState()
 		return m, waitForTrackDone(msg.done)
 
 	case tickMsg:
 		m.logoFrame++
-		if m.isPlaying {
+		if m.isPlaying && !m.clientMode {
 			m.currPos, _ = m.player.GetPosition()
 			m.duration, _ = m.player.GetDuration()
 		}
+		if m.clientMode {
+			return m, tea.Batch(tickCmd(), pollParentState(m.mprisClient))
+		}
 		return m, tickCmd()
+
+	case parentStateMsg:
+		ps := mpris.PlayerState(msg)
+		// Update current track from parent.
+		if ps.CurrentTrackJSON != "" {
+			var t tidal.Track
+			if err := json.Unmarshal([]byte(ps.CurrentTrackJSON), &t); err == nil {
+				m.currentTrack = &t
+			}
+		} else {
+			m.currentTrack = nil
+		}
+		// Update playlist ("My Music") from parent if non-empty.
+		if ps.PlaylistJSON != "" && ps.PlaylistJSON != "null" {
+			var tracks []tidal.Track
+			if err := json.Unmarshal([]byte(ps.PlaylistJSON), &tracks); err == nil && len(tracks) > 0 {
+				// Only replace the list when it actually changed to avoid
+				// clobbering the cursor position on every tick.
+				if len(tracks) != len(m.tracks) || (len(tracks) > 0 && tracks[0].ID != m.tracks[0].ID) {
+					m.tracksOrder = tracks
+					m.applyShuffle()
+					m.state = StateBrowse
+				}
+			}
+		}
+		m.isPlaying = ps.PlaybackStatus == "Playing"
 
 	case trackDoneMsg:
 		if !m.advancing {
@@ -610,24 +734,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.advancing = true
 				m.cursor = next
 				track := m.tracks[next]
-				m.currentTrack = &track
 				m.currPos = 0
 				m.duration = 0
 				_ = m.store.CacheTrack(track.ID, track)
-				autoPlay := func() tea.Msg {
-					url, err := m.client.GetStreamURL(m.ctx, track.ID)
-					if err != nil {
-						return errMsg(err)
-					}
-					done, err := m.player.Play(url)
-					if err != nil {
-						return errMsg(err)
-					}
-					return nowPlayingMsg{done: done}
-				}
-				return m, autoPlay
+				return m, m.playTrackCmd(track)
 			}
 			m.isPlaying = false
+			m.pushState()
 		}
 
 	case favoritesLoadedMsg:
@@ -640,6 +753,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, t := range tracks {
 			m.favorites[t.ID] = true
 		}
+		m.pushState()
 
 	case searchResultsMsg:
 		m.searchTracks = msg
@@ -657,6 +771,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.searchInput.Blur()
 			m.cursor = 0
 		}
+		m.pushState()
 
 	case favoriteMsg:
 		if msg.added {
@@ -676,21 +791,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 		// Auto-play the first track.
 		track := m.tracks[0]
-		m.currentTrack = &track
-		m.isPlaying = true
-		m.advancing = false
 		_ = m.store.CacheTrack(track.ID, track)
-		return m, func() tea.Msg {
-			url, err := m.client.GetStreamURL(m.ctx, track.ID)
-			if err != nil {
-				return errMsg(err)
-			}
-			done, err := m.player.Play(url)
-			if err != nil {
-				return errMsg(err)
-			}
-			return nowPlayingMsg{done: done}
-		}
+		return m, m.playTrackCmd(track)
 
 	case mixesMsg:
 		m.mixes = msg
@@ -716,22 +818,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.advancing = true
 					m.cursor = next
 					track := m.tracks[next]
-					m.currentTrack = &track
 					m.currPos = 0
 					m.duration = 0
 					_ = m.store.CacheTrack(track.ID, track)
-					play := func() tea.Msg {
-						url, err := m.client.GetStreamURL(m.ctx, track.ID)
-						if err != nil {
-							return errMsg(err)
-						}
-						done, err := m.player.Play(url)
-						if err != nil {
-							return errMsg(err)
-						}
-						return nowPlayingMsg{done: done}
-					}
-					return m, tea.Batch(play, listenMPRIS(m.mprisCh))
+					return m, tea.Batch(m.playTrackCmd(track), listenMPRIS(m.mprisCh))
 				}
 			}
 		case mpris.CmdPrevious:
@@ -740,22 +830,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.advancing = false
 				m.cursor = prev
 				track := m.tracks[prev]
-				m.currentTrack = &track
 				m.currPos = 0
 				m.duration = 0
 				_ = m.store.CacheTrack(track.ID, track)
-				play := func() tea.Msg {
-					url, err := m.client.GetStreamURL(m.ctx, track.ID)
-					if err != nil {
-						return errMsg(err)
-					}
-					done, err := m.player.Play(url)
-					if err != nil {
-						return errMsg(err)
-					}
-					return nowPlayingMsg{done: done}
-				}
-				return m, tea.Batch(play, listenMPRIS(m.mprisCh))
+				return m, tea.Batch(m.playTrackCmd(track), listenMPRIS(m.mprisCh))
 			}
 		case mpris.CmdOpenURL:
 			u := ev.URL
@@ -808,7 +886,7 @@ var logoLines = [5]string{
 	`    ██║   ██║██████╔╝██║  ██║███████╗██║   `,
 }
 
-// waveColors is the palette cycled across logo columns for the wave effect.
+// waveColors is the palette cycled across logo columns for the normal wave effect.
 var waveColors = []lipgloss.Color{
 	"#FF6AC1", // hot pink
 	"#FF87D7", // light pink
@@ -822,12 +900,27 @@ var waveColors = []lipgloss.Color{
 	"#FF875F", // salmon
 }
 
+// clientColors is the muted blue-grey palette used in client mode.
+var clientColors = []lipgloss.Color{
+	"#5F87AF", // steel blue
+	"#5F8787", // teal
+	"#5F87D7", // cornflower
+	"#5FAFAF", // cadet blue
+	"#5FAFFF", // dodger blue
+	"#5FD7D7", // medium turquoise
+	"#5FD7FF", // sky
+	"#87AFD7", // light steel blue
+	"#87AFFF", // periwinkle
+	"#87D7D7", // pale turquoise
+}
+
 // renderLogo returns the animated logo string. frame advances the wave by one
 // column per call so the colours appear to scroll left-to-right.
-func renderLogo(frame int) string {
+// palette selects which colour set to use.
+func renderLogo(frame int, palette []lipgloss.Color) string {
 	// Width of the logo in rune columns (all rows same length after padding).
 	width := len([]rune(logoLines[0]))
-	period := len(waveColors)
+	period := len(palette)
 
 	var sb strings.Builder
 	for _, row := range logoLines {
@@ -843,7 +936,7 @@ func renderLogo(frame int) string {
 			if idx < 0 {
 				idx += period
 			}
-			sb.WriteString(lipgloss.NewStyle().Foreground(waveColors[idx]).Render(string(r)))
+			sb.WriteString(lipgloss.NewStyle().Foreground(palette[idx]).Render(string(r)))
 		}
 		sb.WriteByte('\n')
 	}
@@ -857,11 +950,26 @@ func formatTime(seconds float64) string {
 }
 
 func (m Model) View() string {
-	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(0, 1)
-	activeTab := lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("205")).Foreground(lipgloss.Color("0")).Padding(0, 1)
-	inactiveTab := lipgloss.NewStyle().Padding(0, 1)
+	// Colour scheme: muted blue in client mode, vibrant pink in normal mode.
+	accent := lipgloss.Color("205") // hot pink
+	palette := waveColors
+	if m.clientMode {
+		accent = lipgloss.Color("39") // dodger blue
+		palette = clientColors
+	}
 
-	s := renderLogo(m.logoFrame) + "\n"
+	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(accent).Padding(0, 1)
+	activeTab := lipgloss.NewStyle().Bold(true).Background(accent).Foreground(lipgloss.Color("0")).Padding(0, 1)
+	inactiveTab := lipgloss.NewStyle().Padding(0, 1)
+	cursorStyle := lipgloss.NewStyle().Foreground(accent)
+
+	s := renderLogo(m.logoFrame, palette) + "\n"
+
+	// Client-mode banner.
+	if m.clientMode {
+		banner := lipgloss.NewStyle().Foreground(accent).Bold(true)
+		s += banner.Render("  ⇄ Client mode — a parent tidalt instance is running playback") + "\n"
+	}
 
 	// Player Status
 	if m.currentTrack != nil {
@@ -876,13 +984,21 @@ func (m Model) View() string {
 		}
 		s += fmt.Sprintf("\n  %s [%s / %s]\n", m.progress.ViewAs(percent), formatTime(m.currPos), formatTime(m.duration))
 	} else {
-		s += headerStyle.Render("Idle") + "\n"
+		if m.clientMode {
+			s += headerStyle.Render("Select a track to send to the parent instance") + "\n"
+		} else {
+			s += headerStyle.Render("Idle") + "\n"
+		}
 	}
-	deviceLabel := "auto"
-	if m.currentDevice != "" {
-		deviceLabel = m.currentDevice
+	if !m.clientMode {
+		deviceLabel := "auto"
+		if m.currentDevice != "" {
+			deviceLabel = m.currentDevice
+		}
+		s += fmt.Sprintf("  Volume: %.0f%%   Device: %s   Shuffle: %s\n", m.volume, deviceLabel, m.shuffleMode)
+	} else {
+		s += fmt.Sprintf("  Shuffle: %s\n", m.shuffleMode)
 	}
-	s += fmt.Sprintf("  Volume: %.0f%%   Device: %s   Shuffle: %s\n", m.volume, deviceLabel, m.shuffleMode)
 
 	// Error banner — shown inline, clears automatically after 5 s.
 	if m.errText != "" {
@@ -935,7 +1051,7 @@ func (m Model) View() string {
 				}
 				line := fmt.Sprintf(" %s %s  %s%s", cur, d.HWName, d.LongName, selected)
 				if m.cursor == i {
-					s += lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render(line) + "\n"
+					s += cursorStyle.Render(line) + "\n"
 				} else {
 					s += line + "\n"
 				}
@@ -953,7 +1069,7 @@ func (m Model) View() string {
 			}
 			line := fmt.Sprintf(" %s %s (%s)", cursor, mix.Title, mix.SubTitle)
 			if m.cursor == i {
-				s += lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render(line) + "\n"
+				s += cursorStyle.Render(line) + "\n"
 			} else {
 				s += line + "\n"
 			}
@@ -978,7 +1094,7 @@ func (m Model) View() string {
 				}
 				line := fmt.Sprintf(" %s %s %s - %s  [%s]", cur, fav, track.Title, track.Artist.Name, track.Album.Title)
 				if m.searchCursor == i {
-					s += lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render(line) + "\n"
+					s += cursorStyle.Render(line) + "\n"
 				} else {
 					s += line + "\n"
 				}
@@ -1000,7 +1116,7 @@ func (m Model) View() string {
 			}
 			line := fmt.Sprintf(" %s %s %s - %s", cursor, fav, track.Title, track.Artist.Name)
 			if m.cursor == i {
-				s += lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render(line) + "\n"
+				s += cursorStyle.Render(line) + "\n"
 			} else {
 				s += line + "\n"
 			}

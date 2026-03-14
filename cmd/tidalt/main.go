@@ -105,18 +105,26 @@ func main() {
 	}
 
 	// 3. Start MPRIS2 server.
-	// If another instance is already running, forward the URL to it and exit.
+	// If another instance is already running, run the TUI in client mode:
+	// it can browse and queue tracks but all playback commands are forwarded
+	// over D-Bus to the parent instance.
 	mprisServer, mprisErr := mpris.Start(ctx)
 	if errors.Is(mprisErr, mpris.ErrAlreadyRunning) {
-		if openURL == "" {
-			fmt.Println("tidalt is already running.")
-			os.Exit(0)
-		}
-		if err := mpris.SendURL(openURL); err != nil {
-			fmt.Printf("Failed to forward URL to running instance: %v\n", err)
+		mprisClient, err := mpris.NewClient()
+		if err != nil {
+			fmt.Printf("Failed to connect to running instance: %v\n", err)
 			os.Exit(1)
 		}
-		os.Exit(0)
+		defer mprisClient.Close()
+		p := tea.NewProgram(
+			ui.ClientModel(ctx, client, vault, mprisClient, openURL),
+			tea.WithAltScreen(),
+		)
+		if _, err := p.Run(); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 	if mprisErr != nil {
 		fmt.Printf("MPRIS unavailable: %v\n", mprisErr)
@@ -125,7 +133,7 @@ func main() {
 	// 4. Launch TUI — vault is passed in so it is not re-created inside the TUI
 	// (re-creating it after the terminal is in raw mode would prevent passphrase prompts).
 	// The TUI model takes ownership of vault and closes it on quit.
-	p := tea.NewProgram(ui.InitialModel(ctx, client, vault, mprisServer.Commands, openURL), tea.WithAltScreen())
+	p := tea.NewProgram(ui.InitialModel(ctx, client, vault, mprisServer, openURL), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
