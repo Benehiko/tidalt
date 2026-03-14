@@ -17,6 +17,17 @@ linters:
   settings:
     revive:
       severity: warning
+  exclusions:
+    rules:
+      - path: "internal/player/"
+        linters:
+          - typecheck
+          - errcheck
+          - govet
+          - ineffassign
+          - staticcheck
+          - unused
+          - revive
 
 formatters:
   enable:
@@ -32,5 +43,3 @@ formatters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-files:
-    - "internal/player/.*\\.go"
