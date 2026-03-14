@@ -23,9 +23,20 @@ func runSetup() {
 		fatal("mkdir %s: %v", appDir, err)
 	}
 
+	// Resolve the full path to the tidalt binary so the desktop file works
+	// even when the DE launches apps with a minimal PATH.
+	self, err := os.Executable()
+	if err != nil {
+		fatal("cannot determine executable path: %v", err)
+	}
+
+	// Substitute the bare "tidalt" in the Exec line with the absolute path.
+	desktop := string(desktopFileContent)
+	desktop = strings.ReplaceAll(desktop, "Exec=tidalt ", "Exec="+self+" ")
+
 	destPath := filepath.Join(appDir, "tidalt.desktop")
-	step("Writing %s", destPath)
-	if err := os.WriteFile(destPath, desktopFileContent, 0o644); err != nil {
+	step("Writing %s (Exec=%s play %%u)", destPath, self)
+	if err := os.WriteFile(destPath, []byte(desktop), 0o644); err != nil {
 		fatal("write %s: %v", destPath, err)
 	}
 
