@@ -70,7 +70,7 @@ func InitialModel(ctx context.Context, client *tidal.Client) Model {
 	s := store.NewSecretsStore()
 	p := player.NewPlayer()
 
-	vol := 100.0
+	vol := 50.0
 	if v, err := s.LoadVolume(); err == nil {
 		vol = v
 	}
@@ -134,6 +134,8 @@ func (m Model) Init() tea.Cmd {
 func (m Model) waitForContextCancel() tea.Cmd {
 	return func() tea.Msg {
 		<-m.ctx.Done()
+		m.player.Close()
+		m.store.Close()
 		return tea.Quit()
 	}
 }
