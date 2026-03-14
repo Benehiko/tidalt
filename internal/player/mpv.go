@@ -686,6 +686,17 @@ func (p *Player) GetDuration() (float64, error) {
 	return float64(ts) / float64(sr), nil
 }
 
+// Done returns a channel that is closed when the current track finishes
+// playing naturally (not when stopped or cancelled). Returns a nil channel
+// if no track is playing, which blocks forever in a select — safe to use
+// as a sentinel.
+func (p *Player) Done() <-chan struct{} {
+	p.mu.Lock()
+	ch := p.doneCh
+	p.mu.Unlock()
+	return ch
+}
+
 func (p *Player) Close() {
 	p.stop()
 }

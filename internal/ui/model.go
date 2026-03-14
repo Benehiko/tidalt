@@ -105,12 +105,22 @@ type (
 	errMsg        error
 	tickMsg       time.Time
 	nowPlayingMsg struct{}
+	trackDoneMsg  struct{}
 )
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+// waitForTrackDone returns a command that blocks until the player's current
+// track finishes, then sends a trackDoneMsg.
+func waitForTrackDone(p interface{ Done() <-chan struct{} }) tea.Cmd {
+	return func() tea.Msg {
+		<-p.Done()
+		return trackDoneMsg{}
+	}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -241,7 +251,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Cache track metadata
 				_ = m.store.CacheTrack(track.ID, track)
 
-				return m, func() tea.Msg {
+				play := func() tea.Msg {
 					url, err := m.client.GetStreamURL(m.ctx, track.ID)
 					if err != nil {
 						return errMsg(err)
@@ -251,6 +261,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return nowPlayingMsg{}
 				}
+				return m, tea.Batch(play, waitForTrackDone(m.player))
 			}
 
 		case "up", "k":
@@ -307,33 +318,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.isPlaying {
 			m.currPos, _ = m.player.GetPosition()
 			m.duration, _ = m.player.GetDuration()
-
-			if !m.advancing && m.duration > 0 && m.currPos >= m.duration {
-				next := m.cursor + 1
-				if next < len(m.tracks) {
-					m.advancing = true
-					m.cursor = next
-					track := m.tracks[next]
-					m.currentTrack = &track
-					m.currPos = 0
-					m.duration = 0
-					_ = m.store.CacheTrack(track.ID, track)
-					autoPlay := func() tea.Msg {
-						url, err := m.client.GetStreamURL(m.ctx, track.ID)
-						if err != nil {
-							return errMsg(err)
-						}
-						if err := m.player.Play(url); err != nil {
-							return errMsg(err)
-						}
-						return nowPlayingMsg{}
-					}
-					return m, tea.Batch(tickCmd(), autoPlay)
-				}
-				m.isPlaying = false
-			}
 		}
 		return m, tickCmd()
+
+	case trackDoneMsg:
+		if !m.advancing {
+			next := m.cursor + 1
+			if next < len(m.tracks) {
+				m.advancing = true
+				m.cursor = next
+				track := m.tracks[next]
+				m.currentTrack = &track
+				m.currPos = 0
+				m.duration = 0
+				_ = m.store.CacheTrack(track.ID, track)
+				autoPlay := func() tea.Msg {
+					url, err := m.client.GetStreamURL(m.ctx, track.ID)
+					if err != nil {
+						return errMsg(err)
+					}
+					if err := m.player.Play(url); err != nil {
+						return errMsg(err)
+					}
+					return nowPlayingMsg{}
+				}
+				return m, tea.Batch(autoPlay, waitForTrackDone(m.player))
+			}
+			m.isPlaying = false
+		}
 
 	case tracksMsg:
 		m.tracks = msg
