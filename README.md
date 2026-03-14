@@ -19,6 +19,7 @@ A terminal UI (TUI) for Tidal that delivers **bit-perfect, lossless audio** dire
 - Output device selection from within the TUI
 - Secure session storage via system keychain (falls back to age-encrypted file)
 - PipeWire device reservation via D-Bus (`org.freedesktop.ReserveDevice1`) — politely asks PipeWire to step aside before opening the device
+- MPRIS2 media player registration — desktop media keys (play/pause, next, previous) work without the TUI being focused
 
 ---
 
@@ -140,6 +141,8 @@ Your session is saved securely — to the system keychain where available, other
 
 ## Keybindings
 
+### In-TUI
+
 | Key | Action |
 |-----|--------|
 | `Tab` | Cycle tabs (My Music → Daily Mixes → Search) |
@@ -152,6 +155,23 @@ Your session is saved securely — to the system keychain where available, other
 | `d` | Open output device selector |
 | `Esc` | Close device selector |
 | `q` / `Ctrl+C` | Quit |
+
+### Global shortcuts (MPRIS2)
+
+`tidalt` registers as an MPRIS2 media player so playback can be controlled
+without the TUI being focused. On keyboards without dedicated media keys, bind
+[`playerctl`](https://github.com/altdesktop/playerctl) commands to any key
+combination via your desktop environment's global shortcuts. Suggested bindings
+for 65% keyboards:
+
+| Shortcut | Command | Action |
+|----------|---------|--------|
+| `Alt+0` | `playerctl --player=tidalt previous` | Previous track |
+| `Alt+-` | `playerctl --player=tidalt play-pause` | Play / pause |
+| `Alt+=` | `playerctl --player=tidalt next` | Next track |
+
+See [docs/media-keys.md](docs/media-keys.md) for full setup instructions
+including KDE Plasma configuration and troubleshooting.
 
 ---
 
@@ -186,6 +206,7 @@ See [docs/debugging.md](docs/debugging.md) for the full reference — logged
 events, token redaction behaviour, and common error patterns.
 
 ---
+
 
 ## Dependencies
 

@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Benehiko/tidalt/internal/mpris"
 	"github.com/Benehiko/tidalt/internal/store"
 	"github.com/Benehiko/tidalt/internal/tidal"
 	"github.com/Benehiko/tidalt/internal/ui"
@@ -55,8 +56,14 @@ func main() {
 	}
 	vault.Close()
 
-	// 3. Launch TUI
-	p := tea.NewProgram(ui.InitialModel(ctx, client), tea.WithAltScreen())
+	// 3. Start MPRIS2 server (non-fatal if no session bus)
+	mprisServer, mprisErr := mpris.Start(ctx)
+	if mprisErr != nil {
+		fmt.Printf("MPRIS unavailable: %v\n", mprisErr)
+	}
+
+	// 4. Launch TUI
+	p := tea.NewProgram(ui.InitialModel(ctx, client, mprisServer.Commands), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)

@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Benehiko/tidalt/internal/mpris"
 	"github.com/Benehiko/tidalt/internal/player"
 	"github.com/Benehiko/tidalt/internal/store"
 	"github.com/Benehiko/tidalt/internal/tidal"
@@ -62,9 +63,12 @@ type Model struct {
 
 	// Logo animation
 	logoFrame int
+
+	// MPRIS media key commands
+	mprisCh <-chan mpris.Cmd
 }
 
-func InitialModel(ctx context.Context, client *tidal.Client) Model {
+func InitialModel(ctx context.Context, client *tidal.Client, mprisCh <-chan mpris.Cmd) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Search for a song..."
 	ti.CharLimit = 156
@@ -95,6 +99,7 @@ func InitialModel(ctx context.Context, client *tidal.Client) Model {
 		volume:        vol,
 		currentDevice: currentDevice,
 		progress:      progress.New(progress.WithDefaultGradient()),
+		mprisCh:       mprisCh,
 	}
 }
 
@@ -106,6 +111,7 @@ type (
 	tickMsg       time.Time
 	nowPlayingMsg struct{}
 	trackDoneMsg  struct{}
+	mprisMsg      mpris.Cmd
 )
 
 func tickCmd() tea.Cmd {
@@ -120,6 +126,19 @@ func waitForTrackDone(p interface{ Done() <-chan struct{} }) tea.Cmd {
 	return func() tea.Msg {
 		<-p.Done()
 		return trackDoneMsg{}
+	}
+}
+
+// listenMPRIS returns a command that blocks until the next MPRIS media-key
+// command arrives, then re-registers itself so the stream continues.
+func listenMPRIS(ch <-chan mpris.Cmd) tea.Cmd {
+	return func() tea.Msg {
+		cmd, ok := <-ch
+		if !ok {
+			// Channel closed — MPRIS server shut down; stop listening.
+			return nil
+		}
+		return mprisMsg(cmd)
 	}
 }
 
@@ -141,6 +160,7 @@ func (m Model) Init() tea.Cmd {
 		},
 		m.waitForContextCancel(),
 		tickCmd(),
+		listenMPRIS(m.mprisCh),
 	)
 }
 
@@ -358,6 +378,60 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.err = msg
+
+	case mprisMsg:
+		switch mpris.Cmd(msg) {
+		case mpris.CmdPlayPause:
+			_ = m.player.Pause()
+			m.isPlaying = !m.isPlaying
+		case mpris.CmdNext:
+			if !m.advancing {
+				next := m.cursor + 1
+				if next < len(m.tracks) {
+					m.advancing = true
+					m.cursor = next
+					track := m.tracks[next]
+					m.currentTrack = &track
+					m.currPos = 0
+					m.duration = 0
+					_ = m.store.CacheTrack(track.ID, track)
+					play := func() tea.Msg {
+						url, err := m.client.GetStreamURL(m.ctx, track.ID)
+						if err != nil {
+							return errMsg(err)
+						}
+						if err := m.player.Play(url); err != nil {
+							return errMsg(err)
+						}
+						return nowPlayingMsg{}
+					}
+					return m, tea.Batch(play, waitForTrackDone(m.player), listenMPRIS(m.mprisCh))
+				}
+			}
+		case mpris.CmdPrevious:
+			prev := m.cursor - 1
+			if prev >= 0 {
+				m.advancing = false
+				m.cursor = prev
+				track := m.tracks[prev]
+				m.currentTrack = &track
+				m.currPos = 0
+				m.duration = 0
+				_ = m.store.CacheTrack(track.ID, track)
+				play := func() tea.Msg {
+					url, err := m.client.GetStreamURL(m.ctx, track.ID)
+					if err != nil {
+						return errMsg(err)
+					}
+					if err := m.player.Play(url); err != nil {
+						return errMsg(err)
+					}
+					return nowPlayingMsg{}
+				}
+				return m, tea.Batch(play, waitForTrackDone(m.player), listenMPRIS(m.mprisCh))
+			}
+		}
+		return m, listenMPRIS(m.mprisCh)
 	}
 
 	if m.state == StateSearch && m.state != StateDeviceSelect {
