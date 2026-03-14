@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"math/rand/v2"
 	"strings"
 	"time"
@@ -89,6 +88,12 @@ type Model struct {
 
 	// Logo animation
 	logoFrame int
+	barFrame  int // advances on the faster bar tick
+
+	// barHeights holds the current smoothed height (×10 for sub-integer motion)
+	// and target height for each equaliser bar.
+	barHeights [9]int // current height scaled ×10
+	barTargets [9]int // target height scaled ×10
 
 	// MPRIS media key commands (nil in client mode)
 	mprisCh <-chan mpris.Event
@@ -211,6 +216,7 @@ type (
 	errMsg             error
 	clearErrMsg        struct{}
 	tickMsg            time.Time
+	barTickMsg         time.Time
 	nowPlayingMsg      struct{ done <-chan struct{} }
 	trackDoneMsg       struct{}
 	mprisMsg           mpris.Event
@@ -370,6 +376,12 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+func barTickCmd() tea.Cmd {
+	return tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg {
+		return barTickMsg(t)
+	})
+}
+
 // waitForTrackDone returns a command that blocks until the given done channel
 // is closed (i.e. the track finished naturally), then sends a trackDoneMsg.
 // Callers should pass the channel returned by player.Play() directly so there
@@ -423,6 +435,7 @@ func (m Model) Init() tea.Cmd {
 		},
 		m.waitForContextCancel(),
 		tickCmd(),
+		barTickCmd(),
 	}
 	if !m.clientMode {
 		cmds = append(cmds, listenMPRIS(m.mprisCh))
@@ -731,6 +744,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pushState()
 		return m, waitForTrackDone(msg.done)
 
+	case barTickMsg:
+		m.barFrame++
+		updateBars(m.barFrame, &m.barHeights, &m.barTargets, m.isPlaying)
+		return m, barTickCmd()
+
 	case tickMsg:
 		m.logoFrame++
 		if m.isPlaying && !m.clientMode {
@@ -1002,36 +1020,49 @@ var clientColors = []lipgloss.Color{
 	"#87D7D7", // pale turquoise
 }
 
-// musicBars renders a column of 5 animated equaliser bars to the right of the
-// logo. Each bar is one character wide; its filled height oscillates via a
-// sine wave offset per bar. When isPlaying is false all bars show a dim ▁.
-//
-// The logo is 5 rows tall so barRow 0 = top, 4 = bottom.
-// A bar at "height" h means: rows (4-h+1)..4 are filled, rows above are spaces.
-// barRow is filled when barRow >= (numRows - barHeight).
-func musicBars(frame int, palette []lipgloss.Color, isPlaying bool) [5]string {
-	const numBars = 5
-	const numRows = 5
+const (
+	numBars    = 9
+	numRows    = 5
+	barScale   = 10                            // fixed-point scale for smooth motion
+	barMax     = int(numRows * 0.6 * barScale) // 60% height ceiling, scaled
+	barMin     = 1 * barScale                  // minimum height, scaled
+	barStep    = 2                             // smoothing step per tick (scaled units)
+	retargetIn = 4                             // re-randomise target every N ticks
+)
 
-	// Heights for each bar: 1–5, driven by sine waves with per-bar phase offset.
-	heights := [numBars]int{}
-	for b := 0; b < numBars; b++ {
-		if !isPlaying {
-			heights[b] = 1
-		} else {
-			phase := float64(frame)*0.4 + float64(b)*0.9
-			// Map [-1,1] → [1,5]
-			h := int(math.Round((math.Sin(phase)+1.0)/2.0*float64(numRows-1))) + 1
-			if h < 1 {
-				h = 1
-			}
-			if h > numRows {
-				h = numRows
-			}
-			heights[b] = h
+// updateBars advances the bar animation state by one tick. It smooths current
+// heights toward their targets and periodically picks new random targets.
+func updateBars(frame int, heights, targets *[numBars]int, isPlaying bool) {
+	if !isPlaying {
+		for b := range heights {
+			heights[b] = barMin
+			targets[b] = barMin
+		}
+		return
+	}
+
+	// Re-randomise targets on a staggered schedule so bars don't all move together.
+	for b := range targets {
+		if (frame+b*3)%retargetIn == 0 {
+			targets[b] = barMin + rand.IntN(barMax-barMin+1)
 		}
 	}
 
+	// Smooth each bar toward its target.
+	for b := range heights {
+		diff := targets[b] - heights[b]
+		if diff > barStep {
+			heights[b] += barStep
+		} else if diff < -barStep {
+			heights[b] -= barStep
+		} else {
+			heights[b] = targets[b]
+		}
+	}
+}
+
+// musicBars renders the equaliser bar rows using pre-computed heights.
+func musicBars(frame int, heights [numBars]int, palette []lipgloss.Color, isPlaying bool) [numRows]string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 	var rows [numRows]string
@@ -1039,15 +1070,16 @@ func musicBars(frame int, palette []lipgloss.Color, isPlaying bool) [5]string {
 		var sb strings.Builder
 		sb.WriteString("  ") // gap between logo and bars
 		for b := 0; b < numBars; b++ {
+			h := (heights[b] + barScale - 1) / barScale // ceil-divide back to rows
 			if !isPlaying {
 				sb.WriteString(dimStyle.Render("▁"))
-			} else if row >= numRows-heights[b] {
-				idx := (frame + b*2) % len(palette)
+			} else if row >= numRows-h {
+				idx := (frame + b) % len(palette)
 				sb.WriteString(lipgloss.NewStyle().Foreground(palette[idx]).Render("█"))
 			} else {
 				sb.WriteRune(' ')
 			}
-			sb.WriteRune(' ') // space between bars
+			sb.WriteRune(' ') // gap between bars
 		}
 		rows[row] = sb.String()
 	}
@@ -1057,12 +1089,12 @@ func musicBars(frame int, palette []lipgloss.Color, isPlaying bool) [5]string {
 // renderLogo returns the animated logo string. frame advances the wave by one
 // column per call so the colours appear to scroll left-to-right.
 // palette selects which colour set to use.
-func renderLogo(frame int, palette []lipgloss.Color, isPlaying bool) string {
+func renderLogo(frame, barFrame int, barHeights [numBars]int, palette []lipgloss.Color, isPlaying bool) string {
 	// Width of the logo in rune columns (all rows same length after padding).
 	width := len([]rune(logoLines[0]))
 	period := len(palette)
 
-	bars := musicBars(frame, palette, isPlaying)
+	bars := musicBars(barFrame, barHeights, palette, isPlaying)
 
 	var sb strings.Builder
 	for rowIdx, row := range logoLines {
@@ -1106,7 +1138,7 @@ func (m Model) View() string {
 	inactiveTab := lipgloss.NewStyle().Padding(0, 1)
 	cursorStyle := lipgloss.NewStyle().Foreground(accent)
 
-	s := renderLogo(m.logoFrame, palette, m.isPlaying) + "\n"
+	s := renderLogo(m.logoFrame, m.barFrame, m.barHeights, palette, m.isPlaying) + "\n"
 
 	// Client-mode banner.
 	if m.clientMode {
