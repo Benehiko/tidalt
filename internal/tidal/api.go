@@ -66,6 +66,10 @@ type radioResponse struct {
 	Items []Track `json:"items"`
 }
 
+type albumTracksResponse struct {
+	Items []Track `json:"items"`
+}
+
 // v2 JSON:API types for mixes and playlist items.
 
 type v2ResourceIdentifier struct {
@@ -245,6 +249,30 @@ func (c *Client) GetTrackRadio(ctx context.Context, trackID int) ([]Track, error
 	}
 
 	var res radioResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+	return res.Items, nil
+}
+
+func (c *Client) GetAlbumTracks(ctx context.Context, albumID string) ([]Track, error) {
+	params := url.Values{}
+	params.Set("countryCode", c.Session.CountryCode)
+
+	client := c.GetAuthClient(ctx)
+	u := fmt.Sprintf("%s/albums/%s/tracks?%s", BaseURL, albumID, params.Encode())
+	resp, err := client.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to get album tracks (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var res albumTracksResponse
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return nil, err
 	}

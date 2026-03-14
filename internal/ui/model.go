@@ -61,8 +61,11 @@ type Model struct {
 	mixes  []tidal.Mix
 	cursor int
 
-	// Search
-	searchInput textinput.Model
+	// Search — own list so results don't clobber My Music
+	searchInput   textinput.Model
+	searchTracks  []tidal.Track
+	searchCursor  int
+	searchLoading bool
 
 	// Terminal size
 	width  int
@@ -137,6 +140,7 @@ type (
 	tracksMsg          []tidal.Track
 	favoritesLoadedMsg []tidal.Track
 	mixesMsg           []tidal.Mix
+	searchResultsMsg   []tidal.Track
 	errMsg             error
 	tickMsg            time.Time
 	nowPlayingMsg      struct{ done <-chan struct{} }
@@ -198,6 +202,29 @@ func (m *Model) nextIndex() int {
 		}
 		return -1
 	}
+}
+
+// resolveQuery turns a search query into a list of tracks.
+// It handles:
+//   - Tidal track URLs  (tidal.com/track/ID)
+//   - Tidal album URLs  (tidal.com/album/ID)
+//   - Plain text        (title, artist, album — Tidal search covers all three)
+func resolveQuery(ctx context.Context, client *tidal.Client, query string) ([]tidal.Track, error) {
+	if strings.Contains(query, "tidal.com/track/") {
+		parts := strings.Split(query, "/")
+		trackID := strings.Split(parts[len(parts)-1], "?")[0]
+		track, err := client.GetTrack(ctx, trackID)
+		if err != nil {
+			return nil, err
+		}
+		return []tidal.Track{*track}, nil
+	}
+	if strings.Contains(query, "tidal.com/album/") {
+		parts := strings.Split(query, "/")
+		albumID := strings.Split(parts[len(parts)-1], "?")[0]
+		return client.GetAlbumTracks(ctx, albumID)
+	}
+	return client.Search(ctx, query)
 }
 
 func tickCmd() tea.Cmd {
@@ -266,6 +293,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// When the search input is focused, let it consume all keypresses except
+		// the global controls (quit, tab, esc) and enter (which we handle to
+		// trigger search or play).
+		if m.searchInput.Focused() {
+			switch msg.String() {
+			case "ctrl+c", "q", "tab", "esc", "enter":
+				// fall through to the main switch below
+			default:
+				m.searchInput, cmd = m.searchInput.Update(msg)
+				return m, cmd
+			}
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "q":
 			m.player.Close()
@@ -322,24 +362,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 			if m.state == StateSearch && m.searchInput.Focused() {
-				query := m.searchInput.Value()
+				query := strings.TrimSpace(m.searchInput.Value())
+				if query == "" {
+					break
+				}
+				m.searchLoading = true
+				m.searchTracks = nil
+				m.searchCursor = 0
 				return m, func() tea.Msg {
-					if strings.Contains(query, "tidal.com/track/") {
-						parts := strings.Split(query, "/")
-						trackID := strings.Split(parts[len(parts)-1], "?")[0]
-						track, err := m.client.GetTrack(m.ctx, trackID)
-						if err != nil {
-							return errMsg(err)
-						}
-						return tracksMsg([]tidal.Track{*track})
-					}
-
-					tracks, err := m.client.Search(m.ctx, query)
+					tracks, err := resolveQuery(m.ctx, m.client, query)
 					if err != nil {
 						return errMsg(err)
 					}
-					return tracksMsg(tracks)
+					return searchResultsMsg(tracks)
 				}
+			}
+			// Enter on a search result — play it
+			if m.state == StateSearch && len(m.searchTracks) > 0 {
+				track := m.searchTracks[m.searchCursor]
+				m.currentTrack = &track
+				m.isPlaying = true
+				m.advancing = false
+				_ = m.store.CacheTrack(track.ID, track)
+				play := func() tea.Msg {
+					url, err := m.client.GetStreamURL(m.ctx, track.ID)
+					if err != nil {
+						return errMsg(err)
+					}
+					done, err := m.player.Play(url)
+					if err != nil {
+						return errMsg(err)
+					}
+					return nowPlayingMsg{done: done}
+				}
+				return m, play
 			}
 			if m.state == StateMixes && len(m.mixes) > 0 {
 				mix := m.mixes[m.cursor]
@@ -374,19 +430,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "up", "k":
-			if m.cursor > 0 {
+			if m.state == StateSearch {
+				if m.searchCursor > 0 {
+					m.searchCursor--
+				} else if !m.searchInput.Focused() {
+					// At top of results — move focus back to the search input.
+					m.searchInput.Focus()
+				}
+			} else if m.cursor > 0 {
 				m.cursor--
 			}
 		case "down", "j":
-			max := len(m.tracks)
-			switch m.state {
-			case StateMixes:
-				max = len(m.mixes)
-			case StateDeviceSelect:
-				max = len(m.devices)
-			}
-			if m.cursor < max-1 {
-				m.cursor++
+			if m.state == StateSearch {
+				if m.searchInput.Focused() {
+					// Move focus from input to the first result.
+					m.searchInput.Blur()
+				} else if m.searchCursor < len(m.searchTracks)-1 {
+					m.searchCursor++
+				}
+			} else {
+				max := len(m.tracks)
+				switch m.state {
+				case StateMixes:
+					max = len(m.mixes)
+				case StateDeviceSelect:
+					max = len(m.devices)
+				}
+				if m.cursor < max-1 {
+					m.cursor++
+				}
 			}
 
 		case " ":
@@ -424,7 +496,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "r":
-			if m.state != StateDeviceSelect && len(m.tracks) > 0 {
+			if m.state == StateSearch && len(m.searchTracks) > 0 {
+				track := m.searchTracks[m.searchCursor]
+				m.searchLoading = true
+				return m, func() tea.Msg {
+					tracks, err := m.client.GetTrackRadio(m.ctx, track.ID)
+					if err != nil {
+						return errMsg(err)
+					}
+					return searchResultsMsg(tracks)
+				}
+			} else if m.state != StateDeviceSelect && len(m.tracks) > 0 {
 				track := m.tracks[m.cursor]
 				return m, func() tea.Msg {
 					tracks, err := m.client.GetTrackRadio(m.ctx, track.ID)
@@ -436,8 +518,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "f":
-			if m.state != StateDeviceSelect && len(m.tracks) > 0 {
-				track := m.tracks[m.cursor]
+			var favTrack *tidal.Track
+			if m.state == StateSearch && len(m.searchTracks) > 0 {
+				t := m.searchTracks[m.searchCursor]
+				favTrack = &t
+			} else if m.state != StateDeviceSelect && len(m.tracks) > 0 {
+				t := m.tracks[m.cursor]
+				favTrack = &t
+			}
+			if favTrack != nil {
+				track := *favTrack
 				isFav := m.favorites[track.ID]
 				return m, func() tea.Msg {
 					var err error
@@ -515,13 +605,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.favorites[t.ID] = true
 		}
 
+	case searchResultsMsg:
+		m.searchTracks = msg
+		m.searchCursor = 0
+		m.searchLoading = false
+		m.searchInput.Blur()
+
 	case tracksMsg:
 		m.tracksOrder = msg
 		m.shuffleMode = ShuffleOff
 		m.applyShuffle()
-		m.state = StateBrowse
-		m.searchInput.Blur()
-		m.cursor = 0
+		// Don't yank focus away if the user is in the Search tab.
+		if m.state != StateSearch {
+			m.state = StateBrowse
+			m.searchInput.Blur()
+			m.cursor = 0
+		}
 
 	case favoriteMsg:
 		if msg.added {
@@ -594,7 +693,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, listenMPRIS(m.mprisCh)
 	}
 
-	if m.state == StateSearch && m.state != StateDeviceSelect {
+	if m.state == StateSearch {
 		m.searchInput, cmd = m.searchInput.Update(msg)
 	}
 
@@ -777,6 +876,32 @@ func (m Model) View() string {
 			}
 		}
 		s += "\n [TAB] Switch Tab | [ENTER] Play/Select | [SPACE] Pause | [9/0] Vol | [d] Device | [q] Quit\n"
+	case StateSearch:
+		if m.searchLoading {
+			s += "  Searching...\n"
+		} else if len(m.searchTracks) == 0 && m.searchInput.Value() != "" {
+			s += "  No results.\n"
+		} else {
+			start, end := visibleWindow(m.searchCursor, len(m.searchTracks), listHeight)
+			for i := start; i < end; i++ {
+				track := m.searchTracks[i]
+				cur := " "
+				if m.searchCursor == i {
+					cur = ">"
+				}
+				fav := " "
+				if m.favorites[track.ID] {
+					fav = "♥"
+				}
+				line := fmt.Sprintf(" %s %s %s - %s  [%s]", cur, fav, track.Title, track.Artist.Name, track.Album.Title)
+				if m.searchCursor == i {
+					s += lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render(line) + "\n"
+				} else {
+					s += line + "\n"
+				}
+			}
+		}
+		s += "\n [TAB] Switch Tab | [ENTER] Search / Play | [↑/↓] Navigate | [SPACE] Pause | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
 	default:
 		items := m.tracks
 		start, end := visibleWindow(m.cursor, len(items), listHeight)
