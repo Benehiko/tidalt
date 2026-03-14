@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 //go:embed tidalt.desktop
@@ -28,8 +29,8 @@ func runSetup() {
 		fatal("write %s: %v", destPath, err)
 	}
 
-	run("xdg-mime", "default", "tidalt.desktop", "x-scheme-handler/tidal")
-	run("update-desktop-database", appDir)
+	run(false, "xdg-mime", "default", "tidalt.desktop", "x-scheme-handler/tidal")
+	run(true, "update-desktop-database", appDir)
 
 	fmt.Println()
 	fmt.Println("Setup complete.")
@@ -42,10 +43,9 @@ func step(format string, args ...any) {
 }
 
 // run prints the command it is about to execute, runs it, and exits on failure.
-// Non-zero exit codes from optional tools (update-desktop-database) are treated
-// as warnings rather than hard failures.
-func run(name string, args ...string) {
-	// Build a printable command string.
+// optional=true means a non-zero exit is printed as a warning rather than a
+// hard failure (used for tools that may not be installed on all systems).
+func run(optional bool, name string, args ...string) {
 	display := name
 	for _, a := range args {
 		display += " " + a
@@ -53,13 +53,24 @@ func run(name string, args ...string) {
 	step("$ %s", display)
 
 	cmd := exec.Command(name, args...)
+	// Capture stderr so noise from helper tools (e.g. "qtpaths: command not
+	// found" from xdg-mime on KDE without qt6-tools) doesn't alarm the user.
+	// We print it ourselves only on failure.
+	var stderr strings.Builder
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		// update-desktop-database may not be installed on all systems.
-		if name == "update-desktop-database" {
-			fmt.Printf("     (warning: %v — continuing)\n", err)
+		msg := strings.TrimSpace(stderr.String())
+		if optional {
+			if msg != "" {
+				fmt.Printf("     (warning: %s — continuing)\n", msg)
+			} else {
+				fmt.Printf("     (warning: %v — continuing)\n", err)
+			}
 			return
+		}
+		if msg != "" {
+			fatal("%s: %s", display, msg)
 		}
 		fatal("%s: %v", display, err)
 	}
