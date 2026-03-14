@@ -164,23 +164,34 @@ func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStor
 	ti.CharLimit = 156
 	ti.Width = 30
 
+	p := player.NewPlayer()
+
 	vol := 50.0
 	if v, err := s.LoadVolume(); err == nil {
 		vol = v
 	}
+	_ = p.SetVolume(vol)
+
+	currentDevice := ""
+	if dev, err := s.LoadDevice(); err == nil {
+		currentDevice = dev
+		p.SetDevice(dev)
+	}
 
 	return Model{
-		ctx:         ctx,
-		client:      client,
-		store:       s,
-		searchInput: ti,
-		state:       StateBrowse,
-		volume:      vol,
-		progress:    progress.New(progress.WithDefaultGradient()),
-		favorites:   make(map[int]bool),
-		openURL:     openURL,
-		clientMode:  true,
-		mprisClient: mprisClient,
+		ctx:           ctx,
+		client:        client,
+		store:         s,
+		player:        p,
+		searchInput:   ti,
+		state:         StateBrowse,
+		volume:        vol,
+		currentDevice: currentDevice,
+		progress:      progress.New(progress.WithDefaultGradient()),
+		favorites:     make(map[int]bool),
+		openURL:       openURL,
+		clientMode:    true,
+		mprisClient:   mprisClient,
 	}
 }
 
@@ -433,7 +444,9 @@ func (m Model) waitForContextCancel() tea.Cmd {
 		if m.player != nil {
 			m.player.Close()
 		}
-		m.store.Close()
+		if m.store != nil {
+			m.store.Close()
+		}
 		return tea.Quit()
 	}
 }
@@ -446,7 +459,7 @@ func (m *Model) pushState() {
 	}
 	trackJSON := mpris.MarshalTracks(m.currentTrack)
 	playlistJSON := mpris.MarshalTracks(m.tracks)
-	m.mprisServer.SetState(trackJSON, playlistJSON, m.isPlaying)
+	m.mprisServer.SetState(trackJSON, playlistJSON, m.isPlaying, m.currPos, m.duration)
 }
 
 // pollParentState returns a tea.Cmd that fetches the parent's state once and
@@ -482,7 +495,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "ctrl+c", "q":
-			m.player.Close()
+			if m.player != nil {
+				m.player.Close()
+			}
 			m.store.Close()
 			return m, tea.Quit
 
@@ -620,23 +635,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pushState()
 
 		case "9":
-			if !m.clientMode {
-				m.volume -= 5
-				if m.volume < 0 {
-					m.volume = 0
-				}
-				_ = m.player.SetVolume(m.volume)
-				_ = m.store.SaveVolume(m.volume)
+			m.volume -= 5
+			if m.volume < 0 {
+				m.volume = 0
 			}
+			_ = m.player.SetVolume(m.volume)
+			_ = m.store.SaveVolume(m.volume)
 		case "0":
-			if !m.clientMode {
-				m.volume += 5
-				if m.volume > 100 {
-					m.volume = 100
-				}
-				_ = m.player.SetVolume(m.volume)
-				_ = m.store.SaveVolume(m.volume)
+			m.volume += 5
+			if m.volume > 100 {
+				m.volume = 100
 			}
+			_ = m.player.SetVolume(m.volume)
+			_ = m.store.SaveVolume(m.volume)
 
 		case "s":
 			if m.state != StateDeviceSelect {
@@ -722,6 +733,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.isPlaying && !m.clientMode {
 			m.currPos, _ = m.player.GetPosition()
 			m.duration, _ = m.player.GetDuration()
+			m.pushState()
 		}
 		if m.clientMode {
 			return m, tea.Batch(tickCmd(), pollParentState(m.mprisClient))
@@ -753,6 +765,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.isPlaying = ps.PlaybackStatus == "Playing"
+		m.currPos = ps.Position
+		m.duration = ps.Duration
 
 	case trackDoneMsg:
 		if !m.advancing {
@@ -1021,15 +1035,11 @@ func (m Model) View() string {
 			s += headerStyle.Render("Idle") + "\n"
 		}
 	}
-	if !m.clientMode {
-		deviceLabel := "auto"
-		if m.currentDevice != "" {
-			deviceLabel = m.currentDevice
-		}
-		s += fmt.Sprintf("  Volume: %.0f%%   Device: %s   Shuffle: %s\n", m.volume, deviceLabel, m.shuffleMode)
-	} else {
-		s += fmt.Sprintf("  Shuffle: %s\n", m.shuffleMode)
+	deviceLabel := "auto"
+	if m.currentDevice != "" {
+		deviceLabel = m.currentDevice
 	}
+	s += fmt.Sprintf("  Volume: %.0f%%   Device: %s   Shuffle: %s\n", m.volume, deviceLabel, m.shuffleMode)
 
 	// Error banner — shown inline, clears automatically after 5 s.
 	if m.errText != "" {

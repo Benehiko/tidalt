@@ -110,6 +110,10 @@ func main() {
 	// over D-Bus to the parent instance.
 	mprisServer, mprisErr := mpris.Start(ctx)
 	if errors.Is(mprisErr, mpris.ErrAlreadyRunning) {
+		// Close the vault opened above — the parent holds the DB lock.
+		// Open a client-only store that skips the DB.
+		vault.Close()
+		clientVault := store.NewClientStore(readPassphrase)
 		mprisClient, err := mpris.NewClient()
 		if err != nil {
 			fmt.Printf("Failed to connect to running instance: %v\n", err)
@@ -117,7 +121,7 @@ func main() {
 		}
 		defer mprisClient.Close()
 		p := tea.NewProgram(
-			ui.ClientModel(ctx, client, vault, mprisClient, openURL),
+			ui.ClientModel(ctx, client, clientVault, mprisClient, openURL),
 			tea.WithAltScreen(),
 		)
 		if _, err := p.Run(); err != nil {

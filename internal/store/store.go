@@ -59,12 +59,48 @@ func tidalSecretFactory(ctx context.Context, id store.ID) *tidalSecret {
 	return &tidalSecret{}
 }
 
+// NewClientStore opens only the secrets backend (keychain / posixage) without
+// the bbolt database. Use this in client mode where the parent process already
+// holds the exclusive DB lock.
+func NewClientStore(passphrase PassphraseFunc) *SecretsStore {
+	var s store.Store
+	var err error
+
+	s, err = keychain.New(ServiceName, AccountName, tidalSecretFactory)
+	if err != nil {
+		home, _ := os.UserHomeDir()
+		storePath := filepath.Join(home, ".config", ServiceName, "secrets")
+		_ = os.MkdirAll(storePath, 0o700)
+
+		root, rErr := os.OpenRoot(storePath)
+		if rErr != nil {
+			fmt.Printf("Error: failed to open root for posixage: %v\n", rErr)
+		} else {
+			encryptFn := posixage.EncryptionPassword(func(ctx context.Context) ([]byte, error) {
+				return passphrase(ctx, "Enter passphrase for secret store")
+			})
+			decryptFn := posixage.DecryptionPassword(func(ctx context.Context) ([]byte, error) {
+				return passphrase(ctx, "Enter passphrase for secret store")
+			})
+			s, err = posixage.New(root, tidalSecretFactory,
+				posixage.WithEncryptionCallbackFunc(encryptFn),
+				posixage.WithDecryptionCallbackFunc(decryptFn),
+			)
+			if err != nil {
+				fmt.Printf("Error: failed to initialize posixage: %v\n", err)
+			}
+		}
+	}
+
+	return &SecretsStore{store: s}
+}
+
 func NewSecretsStore(passphrase PassphraseFunc) *SecretsStore {
 	var s store.Store
 	var err error
 
 	// 1. Try Keychain
-	s, err = keychain.New[*tidalSecret](ServiceName, AccountName, tidalSecretFactory)
+	s, err = keychain.New(ServiceName, AccountName, tidalSecretFactory)
 	if err != nil {
 		fmt.Printf("Warning: failed to initialize keychain: %v. Falling back to posixage.\n", err)
 
@@ -83,7 +119,7 @@ func NewSecretsStore(passphrase PassphraseFunc) *SecretsStore {
 			decryptFn := posixage.DecryptionPassword(func(ctx context.Context) ([]byte, error) {
 				return passphrase(ctx, "Enter passphrase for secret store")
 			})
-			s, err = posixage.New[*tidalSecret](root, tidalSecretFactory,
+			s, err = posixage.New(root, tidalSecretFactory,
 				posixage.WithEncryptionCallbackFunc(encryptFn),
 				posixage.WithDecryptionCallbackFunc(decryptFn),
 			)
@@ -112,7 +148,7 @@ func NewSecretsStore(passphrase PassphraseFunc) *SecretsStore {
 	return &SecretsStore{store: s, db: db}
 }
 
-func (s *SecretsStore) SaveSession(data interface{}) error {
+func (s *SecretsStore) SaveSession(data any) error {
 	if s.store == nil {
 		return fmt.Errorf("no secure store initialized")
 	}
@@ -123,7 +159,7 @@ func (s *SecretsStore) SaveSession(data interface{}) error {
 	return s.store.Upsert(context.Background(), secrets.MustParseID(AccountName), &tidalSecret{Data: bytes})
 }
 
-func (s *SecretsStore) LoadSession(target interface{}) error {
+func (s *SecretsStore) LoadSession(target any) error {
 	if s.store == nil {
 		return fmt.Errorf("no secure store initialized")
 	}
@@ -138,7 +174,7 @@ func (s *SecretsStore) LoadSession(target interface{}) error {
 	return json.Unmarshal(bytes, target)
 }
 
-func (s *SecretsStore) CacheTrack(trackID int, data interface{}) error {
+func (s *SecretsStore) CacheTrack(trackID int, data any) error {
 	if s.db == nil {
 		return nil
 	}
@@ -148,7 +184,7 @@ func (s *SecretsStore) CacheTrack(trackID int, data interface{}) error {
 		if err != nil {
 			return err
 		}
-		return b.Put([]byte(fmt.Sprintf("%d", trackID)), bytes)
+		return b.Put(fmt.Appendf(nil, "%d", trackID), bytes)
 	})
 }
 
@@ -193,7 +229,7 @@ func (s *SecretsStore) SaveVolume(vol float64) error {
 		if b == nil {
 			return nil
 		}
-		return b.Put([]byte("volume"), []byte(fmt.Sprintf("%f", vol)))
+		return b.Put([]byte("volume"), fmt.Appendf(nil, "%f", vol))
 	})
 }
 

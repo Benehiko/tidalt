@@ -49,6 +49,10 @@ type PlayerState struct {
 	PlaylistJSON string
 	// PlaybackStatus is "Playing", "Paused", or "Stopped".
 	PlaybackStatus string
+	// Position is the current playback position in seconds.
+	Position float64
+	// Duration is the total track duration in seconds.
+	Duration float64
 }
 
 // ErrAlreadyRunning is returned by Start when another tidalt instance already
@@ -73,7 +77,7 @@ type Server struct {
 
 // SetState pushes the current playback state so client instances can read it.
 // trackJSON and playlistJSON are JSON-encoded tidal.Track / []tidal.Track.
-func (s *Server) SetState(trackJSON, playlistJSON string, isPlaying bool) {
+func (s *Server) SetState(trackJSON, playlistJSON string, isPlaying bool, position, duration float64) {
 	status := "Stopped"
 	if isPlaying {
 		status = "Playing"
@@ -84,6 +88,8 @@ func (s *Server) SetState(trackJSON, playlistJSON string, isPlaying bool) {
 		CurrentTrackJSON: trackJSON,
 		PlaylistJSON:     playlistJSON,
 		PlaybackStatus:   status,
+		Position:         position,
+		Duration:         duration,
 	})
 }
 
@@ -211,13 +217,16 @@ func (c *Client) SendPrevious() error {
 // GetState fetches the current playback state from the running instance.
 func (c *Client) GetState() (PlayerState, error) {
 	var trackJSON, playlistJSON, status string
-	if err := c.obj.Call(appIface+".GetState", 0).Store(&trackJSON, &playlistJSON, &status); err != nil {
+	var position, duration float64
+	if err := c.obj.Call(appIface+".GetState", 0).Store(&trackJSON, &playlistJSON, &status, &position, &duration); err != nil {
 		return PlayerState{}, err
 	}
 	return PlayerState{
 		CurrentTrackJSON: trackJSON,
 		PlaylistJSON:     playlistJSON,
 		PlaybackStatus:   status,
+		Position:         position,
+		Duration:         duration,
 	}, nil
 }
 
@@ -299,9 +308,9 @@ func (a *tidalApp) OpenURL(url string) *dbus.Error {
 }
 
 // GetState returns the current playback state for client instances.
-func (a *tidalApp) GetState() (string, string, string, *dbus.Error) {
+func (a *tidalApp) GetState() (string, string, string, float64, float64, *dbus.Error) {
 	ps := a.state.get()
-	return ps.CurrentTrackJSON, ps.PlaylistJSON, ps.PlaybackStatus, nil
+	return ps.CurrentTrackJSON, ps.PlaylistJSON, ps.PlaybackStatus, ps.Position, ps.Duration, nil
 }
 
 // --- org.freedesktop.DBus.Properties ----------------------------------------
