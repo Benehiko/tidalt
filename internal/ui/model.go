@@ -307,7 +307,10 @@ func tidalURLID(rawURL string) string {
 //   - tidal:// deep-link URLs (tidal://track/ID, tidal://album/ID, tidal://mix/ID)
 //   - Tidal web URLs         (tidal.com/browse/track/ID, etc.)
 //   - Plain text             (title, artist, album — Tidal search covers all three)
-func resolveQuery(ctx context.Context, client *tidal.Client, query string) ([]tidal.Track, error) {
+//
+// For plain-text queries the store cache is checked first to avoid redundant
+// API calls. Pass nil for s to skip caching.
+func resolveQuery(ctx context.Context, client *tidal.Client, s *store.SecretsStore, query string) ([]tidal.Track, error) {
 	// Normalise tidal:// deep links to a recognisable path so the checks below work.
 	// tidal://track/12345  →  tidal.com/track/12345
 	// tidal://album/67890  →  tidal.com/album/67890
@@ -329,7 +332,22 @@ func resolveQuery(ctx context.Context, client *tidal.Client, query string) ([]ti
 	if strings.Contains(query, "tidal.com/") && strings.Contains(query, "/mix/") {
 		return client.GetMixTracks(ctx, tidalURLID(query))
 	}
-	return client.Search(ctx, query)
+
+	// Plain-text search — check cache first.
+	if s != nil {
+		var cached []tidal.Track
+		if found, err := s.LoadSearchResults(query, &cached); err == nil && found {
+			return cached, nil
+		}
+	}
+	tracks, err := client.Search(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if s != nil {
+		_ = s.CacheSearchResults(query, tracks)
+	}
+	return tracks, nil
 }
 
 func tickCmd() tea.Cmd {
@@ -363,6 +381,16 @@ func listenMPRIS(ch <-chan mpris.Event) tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
+	// Restore persisted playlist immediately so the list is populated on startup
+	// before the API call for favorites completes.
+	if m.store != nil {
+		var cached []tidal.Track
+		if err := m.store.LoadPlaylist(&cached); err == nil && len(cached) > 0 {
+			m.tracksOrder = cached
+			m.applyShuffle()
+		}
+	}
+
 	cmds := []tea.Cmd{
 		func() tea.Msg {
 			tracks, err := m.client.GetFavorites(m.ctx, 50)
@@ -389,7 +417,7 @@ func (m Model) Init() tea.Cmd {
 	if m.openURL != "" {
 		u := m.openURL
 		cmds = append(cmds, func() tea.Msg {
-			tracks, err := resolveQuery(m.ctx, m.client, u)
+			tracks, err := resolveQuery(m.ctx, m.client, m.store, u)
 			if err != nil {
 				return errMsg(err)
 			}
@@ -516,7 +544,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchTracks = nil
 				m.searchCursor = 0
 				return m, func() tea.Msg {
-					tracks, err := resolveQuery(m.ctx, m.client, query)
+					tracks, err := resolveQuery(m.ctx, m.client, m.store, query)
 					if err != nil {
 						return errMsg(err)
 					}
@@ -753,6 +781,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, t := range tracks {
 			m.favorites[t.ID] = true
 		}
+		_ = m.store.SavePlaylist(m.tracks)
 		m.pushState()
 
 	case searchResultsMsg:
@@ -771,6 +800,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.searchInput.Blur()
 			m.cursor = 0
 		}
+		_ = m.store.SavePlaylist(m.tracks)
 		m.pushState()
 
 	case favoriteMsg:
@@ -789,6 +819,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyShuffle()
 		m.state = StateBrowse
 		m.cursor = 0
+		_ = m.store.SavePlaylist(m.tracks)
 		// Auto-play the first track.
 		track := m.tracks[0]
 		_ = m.store.CacheTrack(track.ID, track)
@@ -839,7 +870,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			u := ev.URL
 			return m, tea.Batch(
 				func() tea.Msg {
-					tracks, err := resolveQuery(m.ctx, m.client, u)
+					tracks, err := resolveQuery(m.ctx, m.client, m.store, u)
 					if err != nil {
 						return errMsg(err)
 					}

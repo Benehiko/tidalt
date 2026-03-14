@@ -98,11 +98,12 @@ func NewSecretsStore(passphrase PassphraseFunc) *SecretsStore {
 		fmt.Printf("Warning: failed to open bolt db: %v\n", err)
 	} else {
 		if err := db.Update(func(tx *bbolt.Tx) error {
-			if _, err := tx.CreateBucketIfNotExists([]byte("Tracks")); err != nil {
-				return err
+			for _, name := range []string{"Tracks", "Settings", "Cache"} {
+				if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
+					return err
+				}
 			}
-			_, err := tx.CreateBucketIfNotExists([]byte("Settings"))
-			return err
+			return nil
 		}); err != nil {
 			fmt.Printf("Warning: failed to initialize bolt db buckets: %v\n", err)
 		}
@@ -214,6 +215,85 @@ func (s *SecretsStore) LoadVolume() (float64, error) {
 		return err
 	})
 	return vol, err
+}
+
+// SavePlaylist persists the current track list so it can be restored on next
+// startup.
+func (s *SecretsStore) SavePlaylist(tracks any) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		data, err := json.Marshal(tracks)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte("playlist"), data)
+	})
+}
+
+// LoadPlaylist restores the track list saved by the previous session.
+// Returns nil, nil when no playlist is stored yet.
+func (s *SecretsStore) LoadPlaylist(target any) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte("playlist"))
+		if v == nil {
+			return nil
+		}
+		return json.Unmarshal(v, target)
+	})
+}
+
+// CacheSearchResults stores the tracks returned for a search query so they can
+// be served from cache on repeated lookups.
+func (s *SecretsStore) CacheSearchResults(query string, tracks any) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Cache"))
+		if b == nil {
+			return nil
+		}
+		data, err := json.Marshal(tracks)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte("search:"+query), data)
+	})
+}
+
+// LoadSearchResults retrieves cached results for query. Returns false when
+// there is no cached entry.
+func (s *SecretsStore) LoadSearchResults(query string, target any) (bool, error) {
+	if s.db == nil {
+		return false, nil
+	}
+	var found bool
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Cache"))
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte("search:" + query))
+		if v == nil {
+			return nil
+		}
+		found = true
+		return json.Unmarshal(v, target)
+	})
+	return found, err
 }
 
 func (s *SecretsStore) Close() {
