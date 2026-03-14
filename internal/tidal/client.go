@@ -17,6 +17,7 @@ const (
 	ClientSecret = "1Nn9AfDAjxrgJFJbKNWLeAyKGVGmINuXPPLHVXAvxAg="
 	AuthURL      = "https://auth.tidal.com/v1/oauth2"
 	BaseURL      = "https://api.tidal.com/v1"
+	BaseURLV2    = "https://openapi.tidal.com/v2"
 )
 
 type Client struct {

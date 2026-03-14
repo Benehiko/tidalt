@@ -20,8 +20,8 @@ type State int
 
 const (
 	StateBrowse State = iota
-	StateSearch
 	StateMixes
+	StateSearch
 	StateDeviceSelect
 )
 
