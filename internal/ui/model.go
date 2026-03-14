@@ -298,6 +298,7 @@ func (m *Model) playTrackCmd(track tidal.Track) tea.Cmd {
 	m.currentTrack = &track
 	m.isPlaying = true
 	m.advancing = true // suppresses any stale trackDoneMsg until nowPlayingMsg resets it
+	_ = m.store.SaveLastTrackID(track.ID)
 	return func() tea.Msg {
 		url, err := m.client.GetStreamURL(m.ctx, track.ID)
 		if err != nil {
@@ -827,6 +828,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tracksOrder = msg
 			m.applyShuffle()
 			m.playlistRestored = true
+			if lastID, err := m.store.LoadLastTrackID(); err == nil && lastID != 0 {
+				for i, t := range m.tracks {
+					if t.ID == lastID {
+						m.cursor = i
+						break
+					}
+				}
+			}
 		}
 
 	case favoritesLoadedMsg:

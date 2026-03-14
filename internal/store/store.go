@@ -253,6 +253,39 @@ func (s *SecretsStore) LoadVolume() (float64, error) {
 	return vol, err
 }
 
+func (s *SecretsStore) SaveLastTrackID(trackID int) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		return b.Put([]byte("lastTrackID"), fmt.Appendf(nil, "%d", trackID))
+	})
+}
+
+func (s *SecretsStore) LoadLastTrackID() (int, error) {
+	if s.db == nil {
+		return 0, nil
+	}
+	var id int
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte("lastTrackID"))
+		if v == nil {
+			return nil
+		}
+		_, err := fmt.Sscanf(string(v), "%d", &id)
+		return err
+	})
+	return id, err
+}
+
 // SavePlaylist persists the current track list so it can be restored on next
 // startup.
 func (s *SecretsStore) SavePlaylist(tracks any) error {
