@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/Benehiko/tidalt/internal/store"
 	"github.com/Benehiko/tidalt/internal/tidal"
 	"github.com/Benehiko/tidalt/internal/ui"
@@ -31,7 +32,7 @@ func main() {
 	// 1. Try to load session from keychain
 	var session tidal.Session
 	err := vault.LoadSession(&session)
-	
+
 	// If loading fails OR session is incomplete (missing CountryCode)
 	if err != nil || session.CountryCode == "" {
 		if err == nil {
@@ -39,7 +40,7 @@ func main() {
 		} else {
 			fmt.Println("No active session found.")
 		}
-		
+
 		// 2. Perform interactive login
 		newSession, err := client.AuthenticateInteractive(ctx)
 		if err != nil {
@@ -51,7 +52,10 @@ func main() {
 			os.Exit(1)
 		}
 		session = *newSession
-		vault.SaveSession(session)
+		if err := vault.SaveSession(session); err != nil {
+			fmt.Printf("Failed to save session: %v\n", err)
+			os.Exit(1)
+		}
 	} else {
 		client.Session = &session
 		fmt.Printf("Restored session for User %d (Country: %s)\n", session.UserID, session.CountryCode)

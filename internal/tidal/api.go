@@ -65,7 +65,7 @@ func (c *Client) GetUser(ctx context.Context) (*UserResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -85,7 +85,7 @@ func (c *Client) GetTrack(ctx context.Context, trackID string) (*Track, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -112,7 +112,7 @@ func (c *Client) Search(ctx context.Context, query string) ([]Track, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -144,7 +144,7 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int) (string, error) 
 		if err != nil {
 			return "", err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode == 200 {
 			var s StreamResponse
@@ -178,7 +178,7 @@ func (c *Client) GetFavorites(ctx context.Context, limit int) ([]Track, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -210,7 +210,7 @@ func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
@@ -253,7 +253,7 @@ func (c *Client) GetMixTracks(ctx context.Context, mixID string) ([]Track, error
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var res struct {
 		Rows []struct {

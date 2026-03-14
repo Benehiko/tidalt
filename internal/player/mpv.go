@@ -272,8 +272,8 @@ func reserveALSADevice(cardNum int) (release func(), err error) {
 	objPath := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/ReserveDevice1/Audio%d", cardNum))
 
 	releaseFunc := func() {
-		conn.ReleaseName(name) //nolint:errcheck
-		conn.Close()
+		_, _ = conn.ReleaseName(name)
+		_ = conn.Close()
 	}
 
 	// Watch NameOwnerChanged for this name before requesting it, so we don't
@@ -285,7 +285,7 @@ func reserveALSADevice(cardNum int) (release func(), err error) {
 		dbus.WithMatchMember("NameOwnerChanged"),
 		dbus.WithMatchArg(0, name),
 	); matchErr != nil {
-		conn.Close()
+		_ = conn.Close()
 		return func() {}, nil
 	}
 
@@ -294,7 +294,7 @@ func reserveALSADevice(cardNum int) (release func(), err error) {
 	// the current owner releases it — no polling needed.
 	reply, err := conn.RequestName(name, dbus.NameFlagAllowReplacement)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return func() {}, nil
 	}
 
@@ -425,7 +425,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 	if err != nil {
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	stream, err := flac.New(resp.Body)
 	if err != nil {
@@ -481,7 +481,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 			return
 		}
 
-		n := int(frame.Header.BlockSize)
+		n := int(frame.BlockSize)
 		buf := make([]byte, n*int(channels)*bps)
 		vol := math.Float64frombits(atomic.LoadUint64(&p.volumeBits))
 

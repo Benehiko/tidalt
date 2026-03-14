@@ -8,8 +8,8 @@ import (
 	"net/url"
 	"time"
 
-	"golang.org/x/oauth2"
 	"github.com/pkg/browser"
+	"golang.org/x/oauth2"
 )
 
 const (
@@ -63,7 +63,7 @@ func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var da struct {
 		DeviceCode      string `json:"deviceCode"`
@@ -79,7 +79,7 @@ func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) 
 	fmt.Printf("2. Enter Code: %s\n\n", da.UserCode)
 	fmt.Println("Press ENTER to open the link in your browser, or wait for authorization...")
 
-	go browser.OpenURL("https://" + da.VerificationURI)
+	_ = browser.OpenURL("https://" + da.VerificationURI)
 
 	// 2. Poll for Token
 	standardDA := &oauth2.DeviceAuthResponse{
@@ -96,14 +96,17 @@ func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) 
 
 	// 3. Fetch Session Info to get UserID and CountryCode reliably
 	// Tidal provides a /sessions endpoint that returns the current session info
-	req, _ := http.NewRequestWithContext(ctx, "GET", BaseURL+"/sessions", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", BaseURL+"/sessions", nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
-	
+
 	sResp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch session info: %w", err)
 	}
-	defer sResp.Body.Close()
+	defer func() { _ = sResp.Body.Close() }()
 
 	var sessionInfo struct {
 		UserID      int    `json:"userId"`
@@ -131,9 +134,9 @@ func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) 
 	}
 
 	if c.Session.CountryCode == "" {
-		// Final fallback to a common country if still missing, 
+		// Final fallback to a common country if still missing,
 		// but the above should work.
-		c.Session.CountryCode = "US" 
+		c.Session.CountryCode = "US"
 	}
 
 	fmt.Printf("Successfully authenticated! (User: %d, Country: %s)\n", c.Session.UserID, c.Session.CountryCode)

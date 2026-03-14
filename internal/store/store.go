@@ -27,7 +27,7 @@ func dbPath() string {
 		return DBFile
 	}
 	dir := filepath.Join(home, ".local", "share", ServiceName)
-	os.MkdirAll(dir, 0700)
+	_ = os.MkdirAll(dir, 0o700)
 	return filepath.Join(dir, DBFile)
 }
 
@@ -47,7 +47,7 @@ func (s *tidalSecret) Unmarshal(data []byte) error {
 	s.Data = data
 	return nil
 }
-func (s *tidalSecret) Metadata() map[string]string { return nil }
+func (s *tidalSecret) Metadata() map[string]string              { return nil }
 func (s *tidalSecret) SetMetadata(meta map[string]string) error { return nil }
 
 func tidalSecretFactory(ctx context.Context, id store.ID) *tidalSecret {
@@ -62,12 +62,12 @@ func NewSecretsStore() *SecretsStore {
 	s, err = keychain.New[*tidalSecret](ServiceName, AccountName, tidalSecretFactory)
 	if err != nil {
 		fmt.Printf("Warning: failed to initialize keychain: %v. Falling back to posixage.\n", err)
-		
+
 		// 2. Fallback to Posixage
 		home, _ := os.UserHomeDir()
 		storePath := filepath.Join(home, ".config", ServiceName, "secrets")
-		os.MkdirAll(storePath, 0700)
-		
+		_ = os.MkdirAll(storePath, 0o700)
+
 		root, rErr := os.OpenRoot(storePath)
 		if rErr != nil {
 			fmt.Printf("Error: failed to open root for posixage: %v\n", rErr)
@@ -79,44 +79,60 @@ func NewSecretsStore() *SecretsStore {
 		}
 	}
 
-	db, err := bbolt.Open(dbPath(), 0600, &bbolt.Options{Timeout: 5 * time.Second})
+	db, err := bbolt.Open(dbPath(), 0o600, &bbolt.Options{Timeout: 5 * time.Second})
 	if err != nil {
 		fmt.Printf("Warning: failed to open bolt db: %v\n", err)
 	} else {
-		db.Update(func(tx *bbolt.Tx) error {
+		if err := db.Update(func(tx *bbolt.Tx) error {
 			if _, err := tx.CreateBucketIfNotExists([]byte("Tracks")); err != nil {
 				return err
 			}
 			_, err := tx.CreateBucketIfNotExists([]byte("Settings"))
 			return err
-		})
+		}); err != nil {
+			fmt.Printf("Warning: failed to initialize bolt db buckets: %v\n", err)
+		}
 	}
 
 	return &SecretsStore{store: s, db: db}
 }
 
 func (s *SecretsStore) SaveSession(data interface{}) error {
-	if s.store == nil { return fmt.Errorf("no secure store initialized") }
+	if s.store == nil {
+		return fmt.Errorf("no secure store initialized")
+	}
 	bytes, err := json.Marshal(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	return s.store.Upsert(context.Background(), secrets.MustParseID(AccountName), &tidalSecret{Data: bytes})
 }
 
 func (s *SecretsStore) LoadSession(target interface{}) error {
-	if s.store == nil { return fmt.Errorf("no secure store initialized") }
+	if s.store == nil {
+		return fmt.Errorf("no secure store initialized")
+	}
 	secret, err := s.store.Get(context.Background(), secrets.MustParseID(AccountName))
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	bytes, err := secret.Marshal()
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	return json.Unmarshal(bytes, target)
 }
 
 func (s *SecretsStore) CacheTrack(trackID int, data interface{}) error {
-	if s.db == nil { return nil }
+	if s.db == nil {
+		return nil
+	}
 	return s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte("Tracks"))
 		bytes, err := json.Marshal(data)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		return b.Put([]byte(fmt.Sprintf("%d", trackID)), bytes)
 	})
 }
@@ -188,6 +204,6 @@ func (s *SecretsStore) LoadVolume() (float64, error) {
 
 func (s *SecretsStore) Close() {
 	if s.db != nil {
-		s.db.Close()
+		_ = s.db.Close()
 	}
 }

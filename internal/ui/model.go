@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	
+
 	"github.com/Benehiko/tidalt/internal/player"
 	"github.com/Benehiko/tidalt/internal/store"
 	"github.com/Benehiko/tidalt/internal/tidal"
@@ -26,13 +26,13 @@ const (
 )
 
 type Model struct {
-	ctx       context.Context
-	client    *tidal.Client
-	store     *store.SecretsStore
-	player    *player.Player
-	state     State
-	
-	err        error
+	ctx    context.Context
+	client *tidal.Client
+	store  *store.SecretsStore
+	player *player.Player
+	state  State
+
+	err error
 
 	// Data
 	tracks []tidal.Track
@@ -74,7 +74,7 @@ func InitialModel(ctx context.Context, client *tidal.Client) Model {
 	if v, err := s.LoadVolume(); err == nil {
 		vol = v
 	}
-	p.SetVolume(vol)
+	_ = p.SetVolume(vol)
 
 	currentDevice := ""
 	if dev, err := s.LoadDevice(); err == nil {
@@ -96,11 +96,13 @@ func InitialModel(ctx context.Context, client *tidal.Client) Model {
 }
 
 // Messages
-type tracksMsg []tidal.Track
-type mixesMsg []tidal.Mix
-type errMsg error
-type tickMsg time.Time
-type nowPlayingMsg struct{}
+type (
+	tracksMsg     []tidal.Track
+	mixesMsg      []tidal.Mix
+	errMsg        error
+	tickMsg       time.Time
+	nowPlayingMsg struct{}
+)
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
@@ -174,12 +176,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "tab":
-			if m.state == StateBrowse {
+			switch m.state {
+			case StateBrowse:
 				m.state = StateMixes
-			} else if m.state == StateMixes {
+			case StateMixes:
 				m.state = StateSearch
 				m.searchInput.Focus()
-			} else {
+			default:
 				m.state = StateBrowse
 				m.searchInput.Blur()
 			}
@@ -190,7 +193,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				chosen := m.devices[m.cursor]
 				m.currentDevice = chosen.HWName
 				m.player.SetDevice(chosen.HWName)
-				m.store.SaveDevice(chosen.HWName)
+				_ = m.store.SaveDevice(chosen.HWName)
 				m.state = m.prevState
 				m.cursor = 0
 				break
@@ -207,7 +210,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 						return tracksMsg([]tidal.Track{*track})
 					}
-					
+
 					tracks, err := m.client.Search(m.ctx, query)
 					if err != nil {
 						return errMsg(err)
@@ -231,8 +234,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isPlaying = true
 				m.advancing = false
 				// Cache track metadata
-				m.store.CacheTrack(track.ID, track)
-				
+				_ = m.store.CacheTrack(track.ID, track)
+
 				return m, func() tea.Msg {
 					url, err := m.client.GetStreamURL(m.ctx, track.ID)
 					if err != nil {
@@ -251,17 +254,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "down", "j":
 			max := len(m.tracks)
-			if m.state == StateMixes {
+			switch m.state {
+			case StateMixes:
 				max = len(m.mixes)
-			} else if m.state == StateDeviceSelect {
+			case StateDeviceSelect:
 				max = len(m.devices)
 			}
 			if m.cursor < max-1 {
 				m.cursor++
 			}
-		
+
 		case " ":
-			m.player.Pause()
+			_ = m.player.Pause()
 			m.isPlaying = !m.isPlaying
 
 		case "9":
@@ -269,15 +273,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.volume < 0 {
 				m.volume = 0
 			}
-			m.player.SetVolume(m.volume)
-			m.store.SaveVolume(m.volume)
+			_ = m.player.SetVolume(m.volume)
+			_ = m.store.SaveVolume(m.volume)
 		case "0":
 			m.volume += 5
 			if m.volume > 100 {
 				m.volume = 100
 			}
-			m.player.SetVolume(m.volume)
-			m.store.SaveVolume(m.volume)
+			_ = m.player.SetVolume(m.volume)
+			_ = m.store.SaveVolume(m.volume)
 		}
 
 	case tea.WindowSizeMsg:
@@ -307,7 +311,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.currentTrack = &track
 					m.currPos = 0
 					m.duration = 0
-					m.store.CacheTrack(track.ID, track)
+					_ = m.store.CacheTrack(track.ID, track)
 					autoPlay := func() tea.Msg {
 						url, err := m.client.GetStreamURL(m.ctx, track.ID)
 						if err != nil {
@@ -330,7 +334,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = StateBrowse
 		m.searchInput.Blur()
 		m.cursor = 0
-	
+
 	case mixesMsg:
 		m.mixes = msg
 
@@ -380,7 +384,7 @@ func (m Model) View() string {
 	inactiveTab := lipgloss.NewStyle().Padding(0, 1)
 
 	s := "\n"
-	
+
 	// Player Status
 	if m.currentTrack != nil {
 		s += headerStyle.Render(fmt.Sprintf("Playing: %s - %s", m.currentTrack.Title, m.currentTrack.Artist.Name)) + "\n"
@@ -424,7 +428,8 @@ func (m Model) View() string {
 		listHeight = 1
 	}
 
-	if m.state == StateDeviceSelect {
+	switch m.state {
+	case StateDeviceSelect:
 		if len(m.devices) == 0 {
 			s += "  No playback devices found.\n"
 		} else {
@@ -448,13 +453,15 @@ func (m Model) View() string {
 			}
 		}
 		s += "\n [↑/↓] Navigate | [ENTER] Select | [ESC] Cancel | [q] Quit\n"
-	} else if m.state == StateMixes {
+	case StateMixes:
 		items := m.mixes
 		start, end := visibleWindow(m.cursor, len(items), listHeight)
 		for i := start; i < end; i++ {
 			mix := items[i]
 			cursor := " "
-			if m.cursor == i { cursor = ">" }
+			if m.cursor == i {
+				cursor = ">"
+			}
 			line := fmt.Sprintf(" %s %s (%s)", cursor, mix.Title, mix.SubTitle)
 			if m.cursor == i {
 				s += lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render(line) + "\n"
@@ -463,13 +470,15 @@ func (m Model) View() string {
 			}
 		}
 		s += "\n [TAB] Switch Tab | [ENTER] Play/Select | [SPACE] Pause | [9/0] Vol | [d] Device | [q] Quit\n"
-	} else {
+	default:
 		items := m.tracks
 		start, end := visibleWindow(m.cursor, len(items), listHeight)
 		for i := start; i < end; i++ {
 			track := items[i]
 			cursor := " "
-			if m.cursor == i { cursor = ">" }
+			if m.cursor == i {
+				cursor = ">"
+			}
 			line := fmt.Sprintf(" %s %s - %s", cursor, track.Title, track.Artist.Name)
 			if m.cursor == i {
 				s += lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render(line) + "\n"
