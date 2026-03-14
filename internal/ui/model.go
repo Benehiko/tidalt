@@ -275,12 +275,9 @@ func (m *Model) nextIndex() int {
 func (m *Model) playTrackCmd(track tidal.Track) tea.Cmd {
 	if m.clientMode {
 		mc := m.mprisClient
+		trackID := track.ID
 		return func() tea.Msg {
-			url, err := m.client.GetStreamURL(m.ctx, track.ID)
-			if err != nil {
-				return errMsg(err)
-			}
-			if err := mc.SendURL(url); err != nil {
+			if err := mc.SendTrackID(trackID); err != nil {
 				return errMsg(err)
 			}
 			return nil
@@ -896,6 +893,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = m.store.CacheTrack(track.ID, track)
 				return m, tea.Batch(m.playTrackCmd(track), listenMPRIS(m.mprisCh))
 			}
+		case mpris.CmdPlayTrackID:
+			trackID := ev.TrackID
+			return m, tea.Batch(
+				func() tea.Msg {
+					track, err := m.client.GetTrack(m.ctx, fmt.Sprintf("%d", trackID))
+					if err != nil {
+						return errMsg(err)
+					}
+					return openURLTracksMsg([]tidal.Track{*track})
+				},
+				listenMPRIS(m.mprisCh),
+			)
 		case mpris.CmdOpenURL:
 			u := ev.URL
 			return m, tea.Batch(

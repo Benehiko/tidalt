@@ -31,14 +31,16 @@ const (
 	CmdPlayPause Cmd = iota
 	CmdNext
 	CmdPrevious
-	CmdOpenURL // URL is in Event.URL
+	CmdOpenURL     // URL is in Event.URL
+	CmdPlayTrackID // TrackID is in Event.TrackID
 )
 
 // Event is sent on the Commands channel for every media key press or URL
 // forwarded from a second instance.
 type Event struct {
-	Cmd Cmd
-	URL string // non-empty only for CmdOpenURL
+	Cmd     Cmd
+	URL     string // non-empty only for CmdOpenURL
+	TrackID int    // non-zero only for CmdPlayTrackID
 }
 
 // PlayerState is the snapshot of playback state the parent broadcasts.
@@ -208,6 +210,12 @@ func (c *Client) SendURL(url string) error {
 	return c.obj.Call(appIface+".OpenURL", 0, url).Err
 }
 
+// SendTrackID asks the running instance to look up and play a track by its
+// Tidal track ID.
+func (c *Client) SendTrackID(trackID int) error {
+	return c.obj.Call(appIface+".PlayTrackID", 0, trackID).Err
+}
+
 // SendPlayPause toggles play/pause on the running instance.
 func (c *Client) SendPlayPause() error {
 	return c.obj.Call("org.mpris.MediaPlayer2.Player.PlayPause", 0).Err
@@ -314,6 +322,16 @@ type tidalApp struct {
 func (a *tidalApp) OpenURL(url string) *dbus.Error {
 	select {
 	case a.ch <- Event{Cmd: CmdOpenURL, URL: url}:
+	default:
+	}
+	return nil
+}
+
+// PlayTrackID is called by a client instance to ask the parent to play a
+// track by its Tidal track ID.
+func (a *tidalApp) PlayTrackID(trackID int) *dbus.Error {
+	select {
+	case a.ch <- Event{Cmd: CmdPlayTrackID, TrackID: trackID}:
 	default:
 	}
 	return nil
