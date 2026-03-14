@@ -16,6 +16,19 @@ import (
 // ErrNotFound is returned by GetTrack when the API responds with 404.
 var ErrNotFound = errors.New("not found")
 
+// apiErr returns a formatted error from a non-2xx response. It tries to extract
+// the human-readable "userMessage" field from the Tidal JSON error body; if
+// that is not present it falls back to the raw body text.
+func apiErr(op string, status int, body []byte) error {
+	var e struct {
+		UserMessage string `json:"userMessage"`
+	}
+	if json.Unmarshal(body, &e) == nil && e.UserMessage != "" {
+		return fmt.Errorf("%s: %s", op, e.UserMessage)
+	}
+	return fmt.Errorf("%s (status %d): %s", op, status, strings.TrimSpace(string(body)))
+}
+
 type Track struct {
 	ID     int    `json:"id"`
 	Title  string `json:"title"`
@@ -97,7 +110,7 @@ func (c *Client) GetUser(ctx context.Context) (*UserResponse, error) {
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get user (status %d): %s", resp.StatusCode, string(body))
+		return nil, apiErr("get user", resp.StatusCode, body)
 	}
 
 	var u UserResponse
@@ -122,7 +135,7 @@ func (c *Client) GetTrack(ctx context.Context, trackID string) (*Track, error) {
 	}
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get track (status %d): %s", resp.StatusCode, string(body))
+		return nil, apiErr("get track", resp.StatusCode, body)
 	}
 
 	var t Track
@@ -149,7 +162,7 @@ func (c *Client) Search(ctx context.Context, query string) ([]Track, error) {
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("search failed (status %d): %s", resp.StatusCode, string(body))
+		return nil, apiErr("search", resp.StatusCode, body)
 	}
 
 	var res SearchResponse
@@ -191,7 +204,7 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int) (string, error) 
 		}
 
 		body, _ := io.ReadAll(resp.Body)
-		lastErr = fmt.Errorf("failed to get stream for %s (status %d): %s", q, resp.StatusCode, string(body))
+		lastErr = apiErr("get stream ("+q+")", resp.StatusCode, body)
 	}
 
 	return "", lastErr
@@ -215,7 +228,7 @@ func (c *Client) GetFavorites(ctx context.Context, limit int) ([]Track, error) {
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get favorites (status %d): %s", resp.StatusCode, string(body))
+		return nil, apiErr("get favorites", resp.StatusCode, body)
 	}
 
 	var res FavoritesResponse
@@ -245,7 +258,7 @@ func (c *Client) GetTrackRadio(ctx context.Context, trackID int) ([]Track, error
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get track radio (status %d): %s", resp.StatusCode, string(body))
+		return nil, apiErr("get track radio", resp.StatusCode, body)
 	}
 
 	var res radioResponse
@@ -269,7 +282,7 @@ func (c *Client) GetAlbumTracks(ctx context.Context, albumID string) ([]Track, e
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get album tracks (status %d): %s", resp.StatusCode, string(body))
+		return nil, apiErr("get album tracks", resp.StatusCode, body)
 	}
 
 	var res albumTracksResponse
@@ -300,7 +313,7 @@ func (c *Client) AddFavorite(ctx context.Context, trackID int) error {
 
 	if resp.StatusCode != 200 && resp.StatusCode != 201 {
 		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to add favorite (status %d): %s", resp.StatusCode, string(b))
+		return apiErr("add favorite", resp.StatusCode, b)
 	}
 	return nil
 }
@@ -323,7 +336,7 @@ func (c *Client) RemoveFavorite(ctx context.Context, trackID int) error {
 
 	if resp.StatusCode != 200 && resp.StatusCode != 204 {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to remove favorite (status %d): %s", resp.StatusCode, string(body))
+		return apiErr("remove favorite", resp.StatusCode, body)
 	}
 	return nil
 }
@@ -347,7 +360,7 @@ func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get mixes (status %d): %s", resp.StatusCode, string(body))
+		return nil, apiErr("get mixes", resp.StatusCode, body)
 	}
 
 	var res v2jsonAPIResponse
@@ -403,7 +416,7 @@ func (c *Client) GetMixTracks(ctx context.Context, mixID string) ([]Track, error
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get mix tracks (status %d): %s", resp.StatusCode, string(body))
+		return nil, apiErr("get mix tracks", resp.StatusCode, body)
 	}
 
 	var res v2jsonAPIResponse
