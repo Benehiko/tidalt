@@ -391,24 +391,28 @@ func openALSA(device string, channels uint8, rate uint32, bits uint8) (*alsaHand
 	}, nil
 }
 
-func (p *Player) Play(url string) error {
+// Play starts playback of the given URL and returns the done channel for this
+// track. The channel is closed when playback finishes naturally. Callers should
+// use the returned channel directly rather than calling Done() separately to
+// avoid a race between stop() clearing doneCh and the new one being set.
+func (p *Player) Play(url string) (<-chan struct{}, error) {
 	p.stop()
 
 	// Resolve device and acquire D-Bus reservation synchronously so we can
 	// return an error to the caller if the device cannot be claimed.
 	device, err := p.getDevice()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	cardNum, err := parseCardNum(device)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	releaseReservation, err := reserveALSADevice(cardNum)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -427,7 +431,7 @@ func (p *Player) Play(url string) error {
 		defer releaseReservation()
 		p.playbackLoop(ctx, url, device)
 	}()
-	return nil
+	return doneCh, nil
 }
 
 func (p *Player) stop() {

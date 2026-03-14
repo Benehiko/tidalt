@@ -139,7 +139,7 @@ type (
 	mixesMsg           []tidal.Mix
 	errMsg             error
 	tickMsg            time.Time
-	nowPlayingMsg      struct{}
+	nowPlayingMsg      struct{ done <-chan struct{} }
 	trackDoneMsg       struct{}
 	mprisMsg           mpris.Cmd
 	favoriteMsg        struct {
@@ -206,11 +206,13 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-// waitForTrackDone returns a command that blocks until the player's current
-// track finishes, then sends a trackDoneMsg.
-func waitForTrackDone(p interface{ Done() <-chan struct{} }) tea.Cmd {
+// waitForTrackDone returns a command that blocks until the given done channel
+// is closed (i.e. the track finished naturally), then sends a trackDoneMsg.
+// Callers should pass the channel returned by player.Play() directly so there
+// is no race between stop() clearing the old channel and Play() setting a new one.
+func waitForTrackDone(done <-chan struct{}) tea.Cmd {
 	return func() tea.Msg {
-		<-p.Done()
+		<-done
 		return trackDoneMsg{}
 	}
 }
@@ -362,12 +364,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err != nil {
 						return errMsg(err)
 					}
-					if err := m.player.Play(url); err != nil {
+					done, err := m.player.Play(url)
+					if err != nil {
 						return errMsg(err)
 					}
-					return nowPlayingMsg{}
+					return nowPlayingMsg{done: done}
 				}
-				return m, tea.Batch(play, waitForTrackDone(m.player))
+				return m, play
 			}
 
 		case "up", "k":
@@ -463,6 +466,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case nowPlayingMsg:
 		m.advancing = false
+		return m, waitForTrackDone(msg.done)
 
 	case tickMsg:
 		m.logoFrame++
@@ -489,12 +493,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err != nil {
 						return errMsg(err)
 					}
-					if err := m.player.Play(url); err != nil {
+					done, err := m.player.Play(url)
+					if err != nil {
 						return errMsg(err)
 					}
-					return nowPlayingMsg{}
+					return nowPlayingMsg{done: done}
 				}
-				return m, tea.Batch(autoPlay, waitForTrackDone(m.player))
+				return m, autoPlay
 			}
 			m.isPlaying = false
 		}
@@ -553,12 +558,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if err != nil {
 							return errMsg(err)
 						}
-						if err := m.player.Play(url); err != nil {
+						done, err := m.player.Play(url)
+						if err != nil {
 							return errMsg(err)
 						}
-						return nowPlayingMsg{}
+						return nowPlayingMsg{done: done}
 					}
-					return m, tea.Batch(play, waitForTrackDone(m.player), listenMPRIS(m.mprisCh))
+					return m, tea.Batch(play, listenMPRIS(m.mprisCh))
 				}
 			}
 		case mpris.CmdPrevious:
@@ -576,12 +582,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err != nil {
 						return errMsg(err)
 					}
-					if err := m.player.Play(url); err != nil {
+					done, err := m.player.Play(url)
+					if err != nil {
 						return errMsg(err)
 					}
-					return nowPlayingMsg{}
+					return nowPlayingMsg{done: done}
 				}
-				return m, tea.Batch(play, waitForTrackDone(m.player), listenMPRIS(m.mprisCh))
+				return m, tea.Batch(play, listenMPRIS(m.mprisCh))
 			}
 		}
 		return m, listenMPRIS(m.mprisCh)
