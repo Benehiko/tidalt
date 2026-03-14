@@ -288,7 +288,7 @@ func (m *Model) playTrackCmd(track tidal.Track) tea.Cmd {
 	}
 	m.currentTrack = &track
 	m.isPlaying = true
-	m.advancing = false
+	m.advancing = true // suppresses any stale trackDoneMsg until nowPlayingMsg resets it
 	return func() tea.Msg {
 		url, err := m.client.GetStreamURL(m.ctx, track.ID)
 		if err != nil {
