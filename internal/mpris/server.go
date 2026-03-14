@@ -53,6 +53,12 @@ type PlayerState struct {
 	Position float64
 	// Duration is the total track duration in seconds.
 	Duration float64
+	// Volume is the playback volume (0–100).
+	Volume float64
+	// Device is the ALSA hw: device string, or "" for auto.
+	Device string
+	// ShuffleMode is the current shuffle mode string ("Off", "Shuffle", "Random").
+	ShuffleMode string
 }
 
 // ErrAlreadyRunning is returned by Start when another tidalt instance already
@@ -77,7 +83,7 @@ type Server struct {
 
 // SetState pushes the current playback state so client instances can read it.
 // trackJSON and playlistJSON are JSON-encoded tidal.Track / []tidal.Track.
-func (s *Server) SetState(trackJSON, playlistJSON string, isPlaying bool, position, duration float64) {
+func (s *Server) SetState(trackJSON, playlistJSON string, isPlaying bool, position, duration, volume float64, device, shuffleMode string) {
 	status := "Stopped"
 	if isPlaying {
 		status = "Playing"
@@ -90,6 +96,9 @@ func (s *Server) SetState(trackJSON, playlistJSON string, isPlaying bool, positi
 		PlaybackStatus:   status,
 		Position:         position,
 		Duration:         duration,
+		Volume:           volume,
+		Device:           device,
+		ShuffleMode:      shuffleMode,
 	})
 }
 
@@ -216,9 +225,9 @@ func (c *Client) SendPrevious() error {
 
 // GetState fetches the current playback state from the running instance.
 func (c *Client) GetState() (PlayerState, error) {
-	var trackJSON, playlistJSON, status string
-	var position, duration float64
-	if err := c.obj.Call(appIface+".GetState", 0).Store(&trackJSON, &playlistJSON, &status, &position, &duration); err != nil {
+	var trackJSON, playlistJSON, status, device, shuffleMode string
+	var position, duration, volume float64
+	if err := c.obj.Call(appIface+".GetState", 0).Store(&trackJSON, &playlistJSON, &status, &position, &duration, &volume, &device, &shuffleMode); err != nil {
 		return PlayerState{}, err
 	}
 	return PlayerState{
@@ -227,6 +236,9 @@ func (c *Client) GetState() (PlayerState, error) {
 		PlaybackStatus:   status,
 		Position:         position,
 		Duration:         duration,
+		Volume:           volume,
+		Device:           device,
+		ShuffleMode:      shuffleMode,
 	}, nil
 }
 
@@ -308,9 +320,9 @@ func (a *tidalApp) OpenURL(url string) *dbus.Error {
 }
 
 // GetState returns the current playback state for client instances.
-func (a *tidalApp) GetState() (string, string, string, float64, float64, *dbus.Error) {
+func (a *tidalApp) GetState() (string, string, string, float64, float64, float64, string, string, *dbus.Error) {
 	ps := a.state.get()
-	return ps.CurrentTrackJSON, ps.PlaylistJSON, ps.PlaybackStatus, ps.Position, ps.Duration, nil
+	return ps.CurrentTrackJSON, ps.PlaylistJSON, ps.PlaybackStatus, ps.Position, ps.Duration, ps.Volume, ps.Device, ps.ShuffleMode, nil
 }
 
 // --- org.freedesktop.DBus.Properties ----------------------------------------

@@ -459,7 +459,7 @@ func (m *Model) pushState() {
 	}
 	trackJSON := mpris.MarshalTracks(m.currentTrack)
 	playlistJSON := mpris.MarshalTracks(m.tracks)
-	m.mprisServer.SetState(trackJSON, playlistJSON, m.isPlaying, m.currPos, m.duration)
+	m.mprisServer.SetState(trackJSON, playlistJSON, m.isPlaying, m.currPos, m.duration, m.volume, m.currentDevice, m.shuffleMode.String())
 }
 
 // pollParentState returns a tea.Cmd that fetches the parent's state once and
@@ -767,6 +767,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isPlaying = ps.PlaybackStatus == "Playing"
 		m.currPos = ps.Position
 		m.duration = ps.Duration
+		if ps.Volume > 0 {
+			m.volume = ps.Volume
+		}
+		if ps.Device != "" {
+			m.currentDevice = ps.Device
+		}
+		if ps.ShuffleMode != "" {
+			switch ps.ShuffleMode {
+			case "Random":
+				m.shuffleMode = ShuffleRandom
+			case "Shuffle":
+				m.shuffleMode = ShuffleFisherYates
+			default:
+				m.shuffleMode = ShuffleOff
+			}
+		}
 
 	case trackDoneMsg:
 		if !m.advancing {
