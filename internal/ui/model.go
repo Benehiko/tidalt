@@ -54,7 +54,7 @@ type Model struct {
 	player *player.Player
 	state  State
 
-	err error
+	errText string // transient error shown in status bar; cleared after display
 
 	// Data
 	tracks []tidal.Track
@@ -142,6 +142,7 @@ type (
 	mixesMsg           []tidal.Mix
 	searchResultsMsg   []tidal.Track
 	errMsg             error
+	clearErrMsg        struct{}
 	tickMsg            time.Time
 	nowPlayingMsg      struct{ done <-chan struct{} }
 	trackDoneMsg       struct{}
@@ -322,7 +323,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state != StateSearch && m.state != StateDeviceSelect {
 				devs, err := player.ListDevices()
 				if err != nil {
-					m.err = err
+					m.errText = err.Error()
 					break
 				}
 				m.devices = devs
@@ -633,7 +634,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mixes = msg
 
 	case errMsg:
-		m.err = msg
+		m.errText = msg.Error()
+		return m, tea.Tick(5*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+
+	case clearErrMsg:
+		m.errText = ""
 
 	case mprisMsg:
 		switch mpris.Cmd(msg) {
@@ -777,10 +782,6 @@ func formatTime(seconds float64) string {
 }
 
 func (m Model) View() string {
-	if m.err != nil {
-		return fmt.Sprintf("Error: %v (Press q to quit)", m.err)
-	}
-
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205")).Padding(0, 1)
 	activeTab := lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("205")).Foreground(lipgloss.Color("0")).Padding(0, 1)
 	inactiveTab := lipgloss.NewStyle().Padding(0, 1)
@@ -806,7 +807,14 @@ func (m Model) View() string {
 	if m.currentDevice != "" {
 		deviceLabel = m.currentDevice
 	}
-	s += fmt.Sprintf("  Volume: %.0f%%   Device: %s   Shuffle: %s\n\n", m.volume, deviceLabel, m.shuffleMode)
+	s += fmt.Sprintf("  Volume: %.0f%%   Device: %s   Shuffle: %s\n", m.volume, deviceLabel, m.shuffleMode)
+
+	// Error banner — shown inline, clears automatically after 5 s.
+	if m.errText != "" {
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+		s += errStyle.Render("  ! "+m.errText) + "\n"
+	}
+	s += "\n"
 
 	// Tabs
 	tabs := []string{"My Music", "Daily Mixes", "Search"}
