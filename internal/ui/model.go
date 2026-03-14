@@ -59,6 +59,9 @@ type Model struct {
 	progress     progress.Model
 	currPos      float64
 	duration     float64
+
+	// Logo animation
+	logoFrame int
 }
 
 func InitialModel(ctx context.Context, client *tidal.Client) Model {
@@ -300,6 +303,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.advancing = false
 
 	case tickMsg:
+		m.logoFrame++
 		if m.isPlaying {
 			m.currPos, _ = m.player.GetPosition()
 			m.duration, _ = m.player.GetDuration()
@@ -370,6 +374,57 @@ func visibleWindow(cursor, total, height int) (start, end int) {
 	return start, end
 }
 
+// logoLines is a 5-row ASCII art representation of "tidalt".
+var logoLines = [5]string{
+	` ████████╗██╗██████╗  █████╗ ██╗  ████████╗`,
+	`    ██╔══╝██║██╔══██╗██╔══██╗██║     ██╔══╝`,
+	`    ██║   ██║██║  ██║███████║██║     ██║   `,
+	`    ██║   ██║██║  ██║██╔══██║██║     ██║   `,
+	`    ██║   ██║██████╔╝██║  ██║███████╗██║   `,
+}
+
+// waveColors is the palette cycled across logo columns for the wave effect.
+var waveColors = []lipgloss.Color{
+	"#FF6AC1", // hot pink
+	"#FF87D7", // light pink
+	"#D7AFFF", // lavender
+	"#87D7FF", // sky blue
+	"#87FFFF", // cyan
+	"#87FFD7", // mint
+	"#AFFFAF", // light green
+	"#D7FF87", // yellow-green
+	"#FFD787", // peach
+	"#FF875F", // salmon
+}
+
+// renderLogo returns the animated logo string. frame advances the wave by one
+// column per call so the colours appear to scroll left-to-right.
+func renderLogo(frame int) string {
+	// Width of the logo in rune columns (all rows same length after padding).
+	width := len([]rune(logoLines[0]))
+	period := len(waveColors)
+
+	var sb strings.Builder
+	for _, row := range logoLines {
+		runes := []rune(row)
+		for col, r := range runes {
+			if r == ' ' || r == '╗' || r == '╔' || r == '╝' || r == '╚' || r == '═' || r == '║' || r == '╠' || r == '╣' || r == '╦' || r == '╩' || r == '╬' {
+				// Keep box-drawing and spaces uncoloured to preserve shape.
+				sb.WriteRune(r)
+				continue
+			}
+			// Wave: colour index shifts with frame and column position.
+			idx := (col*period/width + frame) % period
+			if idx < 0 {
+				idx += period
+			}
+			sb.WriteString(lipgloss.NewStyle().Foreground(waveColors[idx]).Render(string(r)))
+		}
+		sb.WriteByte('\n')
+	}
+	return sb.String()
+}
+
 func formatTime(seconds float64) string {
 	minutes := int(seconds) / 60
 	secs := int(seconds) % 60
@@ -385,7 +440,7 @@ func (m Model) View() string {
 	activeTab := lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("205")).Foreground(lipgloss.Color("0")).Padding(0, 1)
 	inactiveTab := lipgloss.NewStyle().Padding(0, 1)
 
-	s := "\n"
+	s := renderLogo(m.logoFrame) + "\n"
 
 	// Player Status
 	if m.currentTrack != nil {
@@ -424,8 +479,8 @@ func (m Model) View() string {
 		s += "  " + m.searchInput.View() + "\n\n"
 	}
 
-	// overhead: leading \n(1) + player block(4) + tabs(1) + \n\n(2) + search(2 if visible) + footer(2) = ~12
-	overhead := 12
+	// overhead: logo(5) + blank(1) + player block(4) + tabs(1) + \n\n(2) + search(2 if visible) + footer(2) = ~17
+	overhead := 17
 	if m.state == StateSearch {
 		overhead += 2
 	}
