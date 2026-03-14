@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"strings"
 	"time"
@@ -984,16 +985,70 @@ var clientColors = []lipgloss.Color{
 	"#87D7D7", // pale turquoise
 }
 
+// musicBars renders a column of 5 animated equaliser bars to the right of the
+// logo. Each bar is one character wide; its filled height oscillates via a
+// sine wave offset per bar. When isPlaying is false all bars show a dim ▁.
+//
+// The logo is 5 rows tall so barRow 0 = top, 4 = bottom.
+// A bar at "height" h means: rows (4-h+1)..4 are filled, rows above are spaces.
+// barRow is filled when barRow >= (numRows - barHeight).
+func musicBars(frame int, palette []lipgloss.Color, isPlaying bool) [5]string {
+	const numBars = 5
+	const numRows = 5
+
+	// Heights for each bar: 1–5, driven by sine waves with per-bar phase offset.
+	heights := [numBars]int{}
+	for b := 0; b < numBars; b++ {
+		if !isPlaying {
+			heights[b] = 1
+		} else {
+			phase := float64(frame)*0.4 + float64(b)*0.9
+			// Map [-1,1] → [1,5]
+			h := int(math.Round((math.Sin(phase)+1.0)/2.0*float64(numRows-1))) + 1
+			if h < 1 {
+				h = 1
+			}
+			if h > numRows {
+				h = numRows
+			}
+			heights[b] = h
+		}
+	}
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	var rows [numRows]string
+	for row := 0; row < numRows; row++ {
+		var sb strings.Builder
+		sb.WriteString("  ") // gap between logo and bars
+		for b := 0; b < numBars; b++ {
+			if !isPlaying {
+				sb.WriteString(dimStyle.Render("▁"))
+			} else if row >= numRows-heights[b] {
+				idx := (frame + b*2) % len(palette)
+				sb.WriteString(lipgloss.NewStyle().Foreground(palette[idx]).Render("█"))
+			} else {
+				sb.WriteRune(' ')
+			}
+			sb.WriteRune(' ') // space between bars
+		}
+		rows[row] = sb.String()
+	}
+	return rows
+}
+
 // renderLogo returns the animated logo string. frame advances the wave by one
 // column per call so the colours appear to scroll left-to-right.
 // palette selects which colour set to use.
-func renderLogo(frame int, palette []lipgloss.Color) string {
+func renderLogo(frame int, palette []lipgloss.Color, isPlaying bool) string {
 	// Width of the logo in rune columns (all rows same length after padding).
 	width := len([]rune(logoLines[0]))
 	period := len(palette)
 
+	bars := musicBars(frame, palette, isPlaying)
+
 	var sb strings.Builder
-	for _, row := range logoLines {
+	for rowIdx, row := range logoLines {
 		runes := []rune(row)
 		for col, r := range runes {
 			if r == ' ' || r == '╗' || r == '╔' || r == '╝' || r == '╚' || r == '═' || r == '║' || r == '╠' || r == '╣' || r == '╦' || r == '╩' || r == '╬' {
@@ -1008,6 +1063,7 @@ func renderLogo(frame int, palette []lipgloss.Color) string {
 			}
 			sb.WriteString(lipgloss.NewStyle().Foreground(palette[idx]).Render(string(r)))
 		}
+		sb.WriteString(bars[rowIdx])
 		sb.WriteByte('\n')
 	}
 	return sb.String()
@@ -1033,7 +1089,7 @@ func (m Model) View() string {
 	inactiveTab := lipgloss.NewStyle().Padding(0, 1)
 	cursorStyle := lipgloss.NewStyle().Foreground(accent)
 
-	s := renderLogo(m.logoFrame, palette) + "\n"
+	s := renderLogo(m.logoFrame, palette, m.isPlaying) + "\n"
 
 	// Client-mode banner.
 	if m.clientMode {
