@@ -528,7 +528,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 		data    []byte
 		nFrames int
 	}
-	pcmCh := make(chan pcmBuf, 4)
+	pcmCh := make(chan pcmBuf, 2)
 
 	go func() {
 		defer close(pcmCh)
@@ -581,28 +581,55 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 		}
 	}()
 
+	periodFrames := int(ah.periodSize)
+	if periodFrames == 0 {
+		periodFrames = 87
+	}
+
 	for pcm := range pcmCh {
-		for atomic.LoadUint32(&p.paused) == 1 {
+		framesDone := 0
+		for framesDone < pcm.nFrames {
+			// Check pause between every period-sized chunk (~2ms).
+			if atomic.LoadUint32(&p.paused) == 1 {
+				// Drop the ALSA buffer immediately so audio stops now,
+				// then drain the pre-decoded channel so we don't play
+				// stale buffered audio on resume.
+				C.snd_pcm_drop(ah.pcm)
+			drainPCMCh:
+				for {
+					select {
+					case _, ok := <-pcmCh:
+						if !ok {
+							return
+						}
+					default:
+						break drainPCMCh
+					}
+				}
+				for atomic.LoadUint32(&p.paused) == 1 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(20 * time.Millisecond):
+					}
+				}
+				// Resume: re-prepare the PCM and restart from next frame.
+				C.snd_pcm_prepare(ah.pcm)
+				break
+			}
 			select {
 			case <-ctx.Done():
 				C.snd_pcm_drop(ah.pcm)
 				return
-			case <-time.After(20 * time.Millisecond):
+			default:
 			}
-		}
 
-		select {
-		case <-ctx.Done():
-			C.snd_pcm_drop(ah.pcm)
-			return
-		default:
-		}
-
-		framesLeft := C.snd_pcm_uframes_t(pcm.nFrames)
-		framesDone := C.snd_pcm_uframes_t(0)
-		for framesLeft > 0 {
-			off := int(framesDone) * int(channels) * bps
-			written := C.snd_pcm_writei(ah.pcm, unsafe.Pointer(&pcm.data[off]), framesLeft)
+			chunk := periodFrames
+			if framesDone+chunk > pcm.nFrames {
+				chunk = pcm.nFrames - framesDone
+			}
+			off := framesDone * int(channels) * bps
+			written := C.snd_pcm_writei(ah.pcm, unsafe.Pointer(&pcm.data[off]), C.snd_pcm_uframes_t(chunk))
 			if written < 0 {
 				errStr := C.GoString(C.snd_strerror(C.int(written)))
 				logger.L.Warn("snd_pcm_writei error, recovering", "err", errStr)
@@ -613,8 +640,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 				}
 				continue
 			}
-			framesLeft -= C.snd_pcm_uframes_t(written)
-			framesDone += C.snd_pcm_uframes_t(written)
+			framesDone += int(written)
 		}
 
 		atomic.AddUint64(&p.samplesPlayed, uint64(pcm.nFrames))
