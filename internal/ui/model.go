@@ -112,6 +112,10 @@ type Model struct {
 
 	// mprisServer is non-nil in normal mode; used to push live state to clients.
 	mprisServer *mpris.Server
+
+	// playlistRestored is true when a playlist was loaded from the bbolt cache
+	// on startup. Prevents favoritesLoadedMsg from overwriting the restored list.
+	playlistRestored bool
 }
 
 func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsStore, srv *mpris.Server, openURL string) Model {
@@ -203,6 +207,7 @@ type (
 	mixesMsg           []tidal.Mix
 	searchResultsMsg   []tidal.Track
 	openURLTracksMsg   []tidal.Track // tracks resolved from a startup tidal:// URL
+	cachedPlaylistMsg  []tidal.Track // playlist restored from bbolt on startup
 	errMsg             error
 	clearErrMsg        struct{}
 	tickMsg            time.Time
@@ -390,17 +395,18 @@ func listenMPRIS(ch <-chan mpris.Event) tea.Cmd {
 }
 
 func (m Model) Init() tea.Cmd {
-	// Restore persisted playlist immediately so the list is populated on startup
-	// before the API call for favorites completes.
-	if m.store != nil {
-		var cached []tidal.Track
-		if err := m.store.LoadPlaylist(&cached); err == nil && len(cached) > 0 {
-			m.tracksOrder = cached
-			m.applyShuffle()
-		}
-	}
-
 	cmds := []tea.Cmd{
+		// Restore persisted playlist before the API call for favorites completes.
+		func() tea.Msg {
+			if m.store == nil {
+				return nil
+			}
+			var cached []tidal.Track
+			if err := m.store.LoadPlaylist(&cached); err == nil && len(cached) > 0 {
+				return cachedPlaylistMsg(cached)
+			}
+			return nil
+		},
 		func() tea.Msg {
 			tracks, err := m.client.GetFavorites(m.ctx, 50)
 			if err != nil {
@@ -665,13 +671,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if m.state == StateSearch && len(m.searchTracks) > 0 {
 				track := m.searchTracks[m.searchCursor]
-				m.searchLoading = true
 				return m, func() tea.Msg {
 					tracks, err := m.client.GetTrackRadio(m.ctx, track.ID)
 					if err != nil {
 						return errMsg(err)
 					}
-					return searchResultsMsg(tracks)
+					return tracksMsg(tracks)
 				}
 			} else if m.state != StateDeviceSelect && len(m.tracks) > 0 {
 				track := m.tracks[m.cursor]
@@ -799,17 +804,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pushState()
 		}
 
+	case cachedPlaylistMsg:
+		if len(msg) > 0 {
+			m.tracksOrder = msg
+			m.applyShuffle()
+			m.playlistRestored = true
+		}
+
 	case favoritesLoadedMsg:
 		tracks := []tidal.Track(msg)
-		m.tracksOrder = tracks
-		m.shuffleMode = ShuffleOff
-		m.applyShuffle()
-		m.state = StateBrowse
-		m.cursor = 0
+		// Always update the favorites map so ♥ indicators work.
 		for _, t := range tracks {
 			m.favorites[t.ID] = true
 		}
-		_ = m.store.SavePlaylist(m.tracks)
+		// Only replace the track list with favorites when no playlist was
+		// restored from cache — otherwise we'd clobber the user's last session.
+		if !m.playlistRestored {
+			m.tracksOrder = tracks
+			m.shuffleMode = ShuffleOff
+			m.applyShuffle()
+			m.state = StateBrowse
+			m.cursor = 0
+			_ = m.store.SavePlaylist(m.tracks)
+		}
 		m.pushState()
 
 	case searchResultsMsg:
