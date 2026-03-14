@@ -1,4 +1,4 @@
-version: 2
+version: "2"
 
 run:
   timeout: 5m
@@ -16,7 +16,6 @@ linters:
     - revive
   settings:
     revive:
-      ignore-generated-header: true
       severity: warning
 
 formatters:
@@ -27,11 +26,9 @@ formatters:
     gofumpt:
       extra-rules: true
     goimports:
-      local-prefixes: github.com/Benehiko/tidalt
+      local-prefixes:
+        - github.com/Benehiko/tidalt
 
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-dirs:
-    - vendor
