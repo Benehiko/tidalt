@@ -66,6 +66,9 @@ type Model struct {
 
 	// MPRIS media key commands
 	mprisCh <-chan mpris.Cmd
+
+	// Favorited track IDs (populated from GetFavorites; toggled by "f")
+	favorites map[int]bool
 }
 
 func InitialModel(ctx context.Context, client *tidal.Client, mprisCh <-chan mpris.Cmd) Model {
@@ -100,18 +103,24 @@ func InitialModel(ctx context.Context, client *tidal.Client, mprisCh <-chan mpri
 		currentDevice: currentDevice,
 		progress:      progress.New(progress.WithDefaultGradient()),
 		mprisCh:       mprisCh,
+		favorites:     make(map[int]bool),
 	}
 }
 
 // Messages
 type (
-	tracksMsg     []tidal.Track
-	mixesMsg      []tidal.Mix
-	errMsg        error
-	tickMsg       time.Time
-	nowPlayingMsg struct{}
-	trackDoneMsg  struct{}
-	mprisMsg      mpris.Cmd
+	tracksMsg          []tidal.Track
+	favoritesLoadedMsg []tidal.Track
+	mixesMsg           []tidal.Mix
+	errMsg             error
+	tickMsg            time.Time
+	nowPlayingMsg      struct{}
+	trackDoneMsg       struct{}
+	mprisMsg           mpris.Cmd
+	favoriteMsg        struct {
+		trackID int
+		added   bool
+	}
 )
 
 func tickCmd() tea.Cmd {
@@ -149,7 +158,7 @@ func (m Model) Init() tea.Cmd {
 			if err != nil {
 				return errMsg(err)
 			}
-			return tracksMsg(tracks)
+			return favoritesLoadedMsg(tracks)
 		},
 		func() tea.Msg {
 			mixes, err := m.client.GetMixes(m.ctx)
@@ -318,6 +327,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			_ = m.player.SetVolume(m.volume)
 			_ = m.store.SaveVolume(m.volume)
+
+		case "f":
+			if m.state != StateDeviceSelect && len(m.tracks) > 0 {
+				track := m.tracks[m.cursor]
+				isFav := m.favorites[track.ID]
+				return m, func() tea.Msg {
+					var err error
+					if isFav {
+						err = m.client.RemoveFavorite(m.ctx, track.ID)
+					} else {
+						err = m.client.AddFavorite(m.ctx, track.ID)
+					}
+					if err != nil {
+						return errMsg(err)
+					}
+					return favoriteMsg{trackID: track.ID, added: !isFav}
+				}
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -367,11 +394,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.isPlaying = false
 		}
 
+	case favoritesLoadedMsg:
+		tracks := []tidal.Track(msg)
+		m.tracks = tracks
+		m.state = StateBrowse
+		m.cursor = 0
+		for _, t := range tracks {
+			m.favorites[t.ID] = true
+		}
+
 	case tracksMsg:
 		m.tracks = msg
 		m.state = StateBrowse
 		m.searchInput.Blur()
 		m.cursor = 0
+
+	case favoriteMsg:
+		if msg.added {
+			m.favorites[msg.trackID] = true
+		} else {
+			delete(m.favorites, msg.trackID)
+		}
 
 	case mixesMsg:
 		m.mixes = msg
@@ -626,14 +669,18 @@ func (m Model) View() string {
 			if m.cursor == i {
 				cursor = ">"
 			}
-			line := fmt.Sprintf(" %s %s - %s", cursor, track.Title, track.Artist.Name)
+			fav := " "
+			if m.favorites[track.ID] {
+				fav = "♥"
+			}
+			line := fmt.Sprintf(" %s %s %s - %s", cursor, fav, track.Title, track.Artist.Name)
 			if m.cursor == i {
 				s += lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render(line) + "\n"
 			} else {
 				s += line + "\n"
 			}
 		}
-		s += "\n [TAB] Switch Tab | [ENTER] Play/Select | [SPACE] Pause | [9/0] Vol | [d] Device | [q] Quit\n"
+		s += "\n [TAB] Switch Tab | [ENTER] Play/Select | [SPACE] Pause | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
 	}
 
 	return s

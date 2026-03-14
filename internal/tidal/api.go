@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // ErrNotFound is returned by GetTrack when the API responds with 404.
@@ -218,6 +220,59 @@ func (c *Client) GetFavorites(ctx context.Context, limit int) ([]Track, error) {
 		tracks[i] = item.Item
 	}
 	return tracks, nil
+}
+
+func (c *Client) AddFavorite(ctx context.Context, trackID int) error {
+	endpoint := fmt.Sprintf("/users/%d/favorites/tracks", c.Session.UserID)
+	query := url.Values{}
+	query.Set("countryCode", c.Session.CountryCode)
+
+	body := url.Values{}
+	body.Set("trackId", strconv.Itoa(trackID))
+
+	client := c.GetAuthClient(ctx)
+	resp, err := client.Post(
+		BaseURL+endpoint+"?"+query.Encode(),
+		"application/x-www-form-urlencoded",
+		strings.NewReader(body.Encode()),
+	)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to add favorite (status %d): %s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+func (c *Client) RemoveFavorite(ctx context.Context, trackID int) error {
+	endpoint := fmt.Sprintf("/users/%d/favorites/tracks/%d", c.Session.UserID, trackID)
+	params := url.Values{}
+	params.Set("countryCode", c.Session.CountryCode)
+
+	client := c.GetAuthClient(ctx)
+	req, err := newDeleteRequest(BaseURL + endpoint + "?" + params.Encode())
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != 200 && resp.StatusCode != 204 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to remove favorite (status %d): %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+func newDeleteRequest(u string) (*http.Request, error) {
+	return http.NewRequest(http.MethodDelete, u, nil)
 }
 
 func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
