@@ -1,8 +1,8 @@
 [Desktop Entry]
 Name=tidalt
 Comment=Tidal music player (terminal)
-Exec=tidalt %u
-Terminal=true
+Exec=tidalt play %u
+Terminal=false
 Type=Application
 Categories=Audio;Music;Player;
 MimeType=x-scheme-handler/tidal;

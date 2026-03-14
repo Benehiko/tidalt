@@ -56,6 +56,14 @@ func main() {
 		runSetup()
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "play" {
+		url := ""
+		if len(os.Args) > 2 {
+			url = os.Args[2]
+		}
+		runPlay(url)
+		return
+	}
 
 	// Anything else in os.Args[1] is treated as an optional tidal:// or
 	// https://tidal.com/ URL (passed by the OS when the user clicks

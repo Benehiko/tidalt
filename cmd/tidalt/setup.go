@@ -29,6 +29,7 @@ func runSetup() {
 		fatal("write %s: %v", destPath, err)
 	}
 
+	run(false, "xdg-mime", "install", "--novendor", "--mode", "user", destPath)
 	run(false, "xdg-mime", "default", "tidalt.desktop", "x-scheme-handler/tidal")
 	run(true, "update-desktop-database", appDir)
 
