@@ -3,11 +3,16 @@ package tidal
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
+	"slices"
 	"strconv"
 )
+
+// ErrNotFound is returned by GetTrack when the API responds with 404.
+var ErrNotFound = errors.New("not found")
 
 type Track struct {
 	ID     int    `json:"id"`
@@ -67,33 +72,6 @@ type v2PlaylistAttributes struct {
 	Description string `json:"description"`
 }
 
-type v2TrackAttributes struct {
-	Title string `json:"title"`
-}
-
-type v2ArtistAttributes struct {
-	Name string `json:"name"`
-}
-
-type v2TrackRelationships struct {
-	Artists struct {
-		Data []v2ResourceIdentifier `json:"data"`
-	} `json:"artists"`
-}
-
-type v2TrackResource struct {
-	ID            string               `json:"id"`
-	Type          string               `json:"type"`
-	Attributes    v2TrackAttributes    `json:"attributes"`
-	Relationships v2TrackRelationships `json:"relationships"`
-}
-
-type v2ArtistResource struct {
-	ID         string             `json:"id"`
-	Type       string             `json:"type"`
-	Attributes v2ArtistAttributes `json:"attributes"`
-}
-
 type v2jsonAPIResponse struct {
 	Data     []v2ResourceIdentifier `json:"data"`
 	Included []json.RawMessage      `json:"included"`
@@ -120,13 +98,18 @@ func (c *Client) GetUser(ctx context.Context) (*UserResponse, error) {
 }
 
 func (c *Client) GetTrack(ctx context.Context, trackID string) (*Track, error) {
+	params := url.Values{}
+	params.Set("countryCode", c.Session.CountryCode)
 	client := c.GetAuthClient(ctx)
-	resp, err := client.Get(BaseURL + "/tracks/" + trackID)
+	resp, err := client.Get(BaseURL + "/tracks/" + trackID + "?" + params.Encode())
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == 404 {
+		return nil, ErrNotFound
+	}
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("failed to get track (status %d): %s", resp.StatusCode, string(body))
@@ -291,6 +274,9 @@ func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
 }
 
 func (c *Client) GetMixTracks(ctx context.Context, mixID string) ([]Track, error) {
+	// Step 1: fetch the ordered list of track IDs from the v2 playlist endpoint.
+	// The v2 API only returns IDs here — artist/album sideloading is not supported
+	// by this endpoint despite the include parameter existing in the spec.
 	params := url.Values{}
 	params.Set("countryCode", c.Session.CountryCode)
 	params.Set("include", "items")
@@ -313,56 +299,56 @@ func (c *Client) GetMixTracks(ctx context.Context, mixID string) ([]Track, error
 		return nil, err
 	}
 
-	// Parse included resources into typed maps.
-	trackMap := make(map[string]v2TrackResource)
-	artistMap := make(map[string]v2ArtistResource)
-	for _, raw := range res.Included {
-		var base struct {
-			ID   string `json:"id"`
-			Type string `json:"type"`
+	// Collect track IDs in order, skipping non-track refs.
+	ids := make([]string, 0, len(res.Data))
+	for _, ref := range res.Data {
+		if ref.Type == "tracks" {
+			ids = append(ids, ref.ID)
 		}
-		if err := json.Unmarshal(raw, &base); err != nil {
-			continue
-		}
-		switch base.Type {
-		case "tracks":
-			var t v2TrackResource
-			if err := json.Unmarshal(raw, &t); err == nil {
-				trackMap[t.ID] = t
-			}
-		case "artists":
-			var a v2ArtistResource
-			if err := json.Unmarshal(raw, &a); err == nil {
-				artistMap[a.ID] = a
-			}
-		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
 	}
 
-	tracks := make([]Track, 0, len(res.Data))
-	for _, ref := range res.Data {
-		if ref.Type != "tracks" {
-			continue
-		}
-		t, ok := trackMap[ref.ID]
-		if !ok {
-			continue
-		}
-		id, err := strconv.Atoi(ref.ID)
-		if err != nil {
-			continue
-		}
-		track := Track{
-			ID:    id,
-			Title: t.Attributes.Title,
-		}
-		// Use the first artist from the track's relationships.
-		if len(t.Relationships.Artists.Data) > 0 {
-			artistID := t.Relationships.Artists.Data[0].ID
-			if a, ok := artistMap[artistID]; ok {
-				track.Artist.Name = a.Attributes.Name
-			}
-		}
-		tracks = append(tracks, track)
+	// Step 2: fetch full track details (with artist + album) from the v1 API
+	// concurrently, one request per track.
+	type result struct {
+		idx   int
+		track Track
+		err   error
 	}
-	return tracks, nil
+	ch := make(chan result, len(ids))
+	for i, id := range ids {
+		go func(idx int, trackID string) {
+			t, err := c.GetTrack(ctx, trackID)
+			if err != nil {
+				ch <- result{idx: idx, err: err}
+				return
+			}
+			ch <- result{idx: idx, track: *t}
+		}(i, id)
+	}
+
+	type indexedTrack struct {
+		idx   int
+		track Track
+	}
+	var available []indexedTrack
+	for range ids {
+		r := <-ch
+		if errors.Is(r.err, ErrNotFound) {
+			continue
+		}
+		if r.err != nil {
+			return nil, fmt.Errorf("failed to get mix track details: %w", r.err)
+		}
+		available = append(available, indexedTrack{r.idx, r.track})
+	}
+	// Sort by original playlist position.
+	slices.SortFunc(available, func(a, b indexedTrack) int { return a.idx - b.idx })
+	ordered := make([]Track, len(available))
+	for i, it := range available {
+		ordered[i] = it.track
+	}
+	return ordered, nil
 }
