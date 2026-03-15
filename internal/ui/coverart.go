@@ -174,25 +174,29 @@ func coverPanelLines(img image.Image, title, artist, album string, w, h int) []s
 		return lines
 	}
 
-	imgRows := h - 4 // 1 blank + 3 text lines below the image
+	// Reserve 1 blank + 3 text lines below the image; clamp so imgRows never
+	// exceeds h (which can be as small as 1 after a terminal resize).
+	imgRows := h - 4
 	if imgRows < 2 {
 		imgRows = 2
+	}
+	if imgRows > h {
+		imgRows = h
 	}
 
 	if img != nil {
 		artLines := strings.Split(strings.TrimRight(renderBlockArt(img, w, imgRows), "\n"), "\n")
-		for i := 0; i < imgRows && i < len(artLines); i++ {
+		for i := 0; i < imgRows && i < len(artLines) && i < h; i++ {
 			lines[i] = artLines[i]
 		}
 	} else {
-		// Loading placeholder.
 		placeholder := strings.Repeat("░", w)
-		for i := 0; i < imgRows; i++ {
+		for i := 0; i < imgRows && i < h; i++ {
 			lines[i] = placeholder
 		}
 	}
 
-	// Text lines below the image.
+	// Text lines below the image — all guarded by h.
 	base := imgRows + 1 // +1 blank gap
 	if base < h {
 		lines[base] = truncateStr(title, w)
