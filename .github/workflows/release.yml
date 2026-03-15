@@ -124,8 +124,48 @@ jobs:
           merge-multiple: true
           path: dist/
 
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Build release body
+        id: body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Fetch the auto-generated changelog from the GitHub API.
+          CHANGELOG=$(gh api repos/${{ github.repository }}/releases/generate-notes \
+            --method POST \
+            --field tag_name=${{ github.ref_name }} \
+            --jq '.body')
+
+          # Write the checksum section, then append the generated changelog.
+          printf '%s\n' '## Checksums (SHA-256)' > release_body.md
+          printf '%s\n' '' >> release_body.md
+          printf '%s\n' 'Verify all downloaded files at once:' >> release_body.md
+          printf '%s\n' '' >> release_body.md
+          printf '%s\n' '```bash' >> release_body.md
+          printf '%s\n' 'sha256sum -c checksums.txt' >> release_body.md
+          printf '%s\n' '```' >> release_body.md
+          printf '%s\n' '' >> release_body.md
+          printf '%s\n' 'Or check a single file:' >> release_body.md
+          printf '%s\n' '' >> release_body.md
+          printf '%s\n' '```bash' >> release_body.md
+          printf '%s\n' 'sha256sum --ignore-missing -c checksums.txt' >> release_body.md
+          printf '%s\n' '```' >> release_body.md
+          printf '%s\n' '' >> release_body.md
+          printf '%s\n' '```' >> release_body.md
+          cat dist/checksums.txt >> release_body.md
+          printf '%s\n' '```' >> release_body.md
+          printf '%s\n' '' >> release_body.md
+          printf '%s\n' '---' >> release_body.md
+          printf '%s\n' '' >> release_body.md
+          printf '%s' "$CHANGELOG" >> release_body.md
+
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: release_body.md
