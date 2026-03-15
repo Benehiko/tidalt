@@ -738,9 +738,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return nil
 				}
 			}
-			_ = m.player.Pause()
-			m.isPlaying = !m.isPlaying
-			m.pushState()
+			// If nothing is playing but a track is selected (restored session),
+			// start playback instead of toggling a paused player.
+			if m.currentTrack == nil {
+				var track *tidal.Track
+				switch m.state {
+				case StateSearch:
+					if len(m.searchTracks) > 0 {
+						t := m.searchTracks[m.searchCursor]
+						track = &t
+					}
+				default:
+					if len(m.tracks) > 0 {
+						t := m.tracks[m.cursor]
+						track = &t
+					}
+				}
+				if track != nil {
+					_ = m.store.CacheTrack(track.ID, *track)
+					return m, m.playTrackCmd(*track)
+				}
+			} else {
+				_ = m.player.Pause()
+				m.isPlaying = !m.isPlaying
+				m.pushState()
+			}
 
 		case "9":
 			m.volume -= 5
@@ -1026,6 +1048,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ev := mpris.Event(msg)
 		switch ev.Cmd {
 		case mpris.CmdPlayPause:
+			// If nothing is playing (restored session), start the cursor track.
+			if m.currentTrack == nil && len(m.tracks) > 0 {
+				track := m.tracks[m.cursor]
+				_ = m.store.CacheTrack(track.ID, track)
+				return m, tea.Batch(m.playTrackCmd(track), listenMPRIS(m.mprisCh))
+			}
 			_ = m.player.Pause()
 			m.isPlaying = !m.isPlaying
 		case mpris.CmdNext:
