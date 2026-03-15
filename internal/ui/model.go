@@ -131,6 +131,13 @@ type Model struct {
 	// Cover art panel.
 	coverImage    image.Image // nil while loading or unavailable
 	coverCacheKey string      // UUID of the currently displayed cover
+
+	// Kitty terminal graphics protocol support.
+	// kittySupported is set once at startup.  kittyRows holds the pre-generated
+	// per-row Kitty sequences for the current cover at the current panel size;
+	// it is regenerated whenever the cover or terminal height changes.
+	kittySupported bool
+	kittyRows      []string
 }
 
 func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsStore, srv *mpris.Server, openURL string) Model {
@@ -159,19 +166,20 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 	}
 
 	return Model{
-		ctx:           ctx,
-		client:        client,
-		store:         s,
-		player:        p,
-		searchInput:   ti,
-		state:         StateBrowse,
-		volume:        vol,
-		currentDevice: currentDevice,
-		progress:      progress.New(progress.WithDefaultGradient()),
-		mprisCh:       mprisCh,
-		favorites:     make(map[int]bool),
-		openURL:       openURL,
-		mprisServer:   srv,
+		ctx:            ctx,
+		client:         client,
+		store:          s,
+		player:         p,
+		searchInput:    ti,
+		state:          StateBrowse,
+		volume:         vol,
+		currentDevice:  currentDevice,
+		progress:       progress.New(progress.WithDefaultGradient()),
+		mprisCh:        mprisCh,
+		favorites:      make(map[int]bool),
+		openURL:        openURL,
+		mprisServer:    srv,
+		kittySupported: KittySupported(),
 	}
 }
 
@@ -199,19 +207,20 @@ func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStor
 	}
 
 	return Model{
-		ctx:           ctx,
-		client:        client,
-		store:         s,
-		player:        p,
-		searchInput:   ti,
-		state:         StateBrowse,
-		volume:        vol,
-		currentDevice: currentDevice,
-		progress:      progress.New(progress.WithDefaultGradient()),
-		favorites:     make(map[int]bool),
-		openURL:       openURL,
-		clientMode:    true,
-		mprisClient:   mprisClient,
+		ctx:            ctx,
+		client:         client,
+		store:          s,
+		player:         p,
+		searchInput:    ti,
+		state:          StateBrowse,
+		volume:         vol,
+		currentDevice:  currentDevice,
+		progress:       progress.New(progress.WithDefaultGradient()),
+		favorites:      make(map[int]bool),
+		openURL:        openURL,
+		clientMode:     true,
+		mprisClient:    mprisClient,
+		kittySupported: KittySupported(),
 	}
 }
 
@@ -564,7 +573,35 @@ func (m *Model) maybeUpdateCover(t *tidal.Track) tea.Cmd {
 	}
 	m.coverImage = nil
 	m.coverCacheKey = cover
+	m.kittyRows = nil
 	return fetchCoverCmd(cover)
+}
+
+// regenKittyRows rebuilds m.kittyRows from the current coverImage and window
+// dimensions.  It mirrors the imgRows calculation in coverPanelLines so the
+// row count is always consistent.
+func (m *Model) regenKittyRows() {
+	if !m.kittySupported || m.coverImage == nil {
+		m.kittyRows = nil
+		return
+	}
+	const panelW = 36
+	overhead := 17
+	if m.state == StateSearch {
+		overhead += 2
+	}
+	listHeight := m.height - overhead
+	if listHeight < 1 {
+		listHeight = 1
+	}
+	imgRows := listHeight - 4
+	if imgRows < 2 {
+		imgRows = 2
+	}
+	if imgRows > listHeight {
+		imgRows = listHeight
+	}
+	m.kittyRows = kittyRowSequences(m.coverImage, panelW, imgRows)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -851,6 +888,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			barWidth = 10
 		}
 		m.progress = progress.New(progress.WithDefaultGradient(), progress.WithWidth(barWidth))
+		m.regenKittyRows()
 
 	case nowPlayingMsg:
 		m.advancing = false
@@ -870,6 +908,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case coverLoadedMsg:
 		if msg.key == m.coverCacheKey {
 			m.coverImage = msg.img
+			m.regenKittyRows()
 		}
 
 	case barTickMsg:
@@ -1474,7 +1513,7 @@ func (m Model) View() string {
 		title := m.currentTrack.Title
 		artist := m.currentTrack.Artist.Name
 		album := m.currentTrack.Album.Title
-		panel := coverPanelLines(m.coverImage, title, artist, album, panelW, listHeight)
+		panel := coverPanelLines(m.coverImage, title, artist, album, panelW, listHeight, m.kittyRows)
 		gutter := strings.Repeat(" ", gutterL)
 
 		for i := 0; i < listHeight; i++ {
