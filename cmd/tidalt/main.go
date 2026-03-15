@@ -112,6 +112,8 @@ func main() {
 		runPlay(url)
 	case "daemon":
 		runDaemon()
+	case "logout":
+		runLogout()
 	default:
 		// Treat os.Args[1] as an optional tidal:// or https://tidal.com/ URL
 		// (passed by the OS when the user clicks "Open in desktop app").

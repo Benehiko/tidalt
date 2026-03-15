@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/pkg/browser"
@@ -155,6 +156,34 @@ func (c *Client) TokenSource(ctx context.Context) oauth2.TokenSource {
 		Expiry:       c.Session.Expiry,
 	}
 	return c.Oauth.TokenSource(ctx, t)
+}
+
+// RevokeToken revokes the given token via the Tidal OAuth2 revocation endpoint.
+// Errors are logged but not fatal — the caller should still delete the local
+// session regardless.
+func (c *Client) RevokeToken(ctx context.Context, token string) error {
+	data := url.Values{}
+	data.Set("token", token)
+	data.Set("client_id", ClientID)
+	data.Set("client_secret", ClientSecret)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, AuthURL+"/revoke",
+		strings.NewReader(data.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("revoke returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func (c *Client) GetAuthClient(ctx context.Context) *http.Client {

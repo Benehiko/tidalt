@@ -174,6 +174,13 @@ func (s *SecretsStore) LoadSession(target any) error {
 	return json.Unmarshal(bytes, target)
 }
 
+func (s *SecretsStore) DeleteSession() error {
+	if s.store == nil {
+		return fmt.Errorf("no secure store initialized")
+	}
+	return s.store.Delete(context.Background(), secrets.MustParseID(AccountName))
+}
+
 func (s *SecretsStore) CacheTrack(trackID int, data any) error {
 	if s.db == nil {
 		return nil
