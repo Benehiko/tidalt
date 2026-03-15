@@ -1,6 +1,14 @@
 ![tidalt TUI](docs/tui.png)
 
-A terminal UI for Tidal that delivers **bit-perfect, lossless audio** directly to your DAC — no PipeWire, no PulseAudio, no resampling.
+**tidalt** is a Tidal music player for Linux that delivers **bit-perfect, lossless audio** directly to your DAC — no PipeWire, no PulseAudio, no resampling.
+
+It is built on top of the Tidal API and can run in three ways:
+
+- **Interactive TUI** — browse, search, and control playback from the terminal
+- **Daemon** — headless background process, controlled via the TUI or any MPRIS2 client
+- **Client** — lightweight TUI that forwards commands to a running daemon over D-Bus
+
+All three modes share the same playback engine. The daemon holds exclusive access to the audio device only while a track is actually playing — releasing it on pause so other applications can use it freely.
 
 > 100% vibe coded with [Claude](https://claude.ai) and [Gemini](https://gemini.google.com).
 
@@ -108,7 +116,23 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 
 ### Global shortcuts (MPRIS2)
 
-`tidalt` registers as an MPRIS2 media player so playback can be controlled without the TUI being focused. On keyboards without dedicated media keys, bind [`playerctl`](https://github.com/altdesktop/playerctl) to custom shortcuts via your desktop environment. Suggested bindings for 65% keyboards:
+`tidalt` registers as an MPRIS2 media player so playback can be controlled without the TUI being focused — including from the daemon. These shortcuts work as long as tidalt (or `tidalt daemon`) is running, with no TUI open.
+
+#### Standard media keys
+
+Many keyboards and desktop environments map dedicated media keys directly to MPRIS2. These work automatically with no configuration:
+
+| Key        | Action         |
+| ---------- | -------------- |
+| `fn` + `.` | Play / pause   |
+| `fn` + `,` | Previous track |
+| `fn` + `/` | Next track     |
+
+These are handled by your desktop environment via MPRIS2 — tidalt does not implement any special key capture itself.
+
+#### Custom bindings (65% keyboards)
+
+On keyboards without dedicated media keys, bind [`playerctl`](https://github.com/altdesktop/playerctl) to custom shortcuts via your desktop environment:
 
 | Shortcut | Action         |
 | -------- | -------------- |
