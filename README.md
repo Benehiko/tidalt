@@ -48,6 +48,18 @@ filtering on top of XDG and require a one-time browser-side configuration
 step. See [docs/browser-url-handler.md](docs/browser-url-handler.md) for
 per-browser instructions and troubleshooting.
 
+### Run as a background daemon (optional)
+
+Install tidalt as a systemd user service so it runs silently in the background
+from login, with no terminal window:
+
+```bash
+tidalt setup --daemon
+```
+
+Then open the TUI from any terminal with `tidalt`, or control playback with
+`playerctl`. See [docs/client-server.md](docs/client-server.md) for details.
+
 ---
 
 On first launch you will be prompted to log in via the Tidal OAuth2 device flow. Your session is saved to the system keychain (or an age-encrypted file at `~/.config/tidalt/secrets`) and reused on subsequent runs.
@@ -64,8 +76,11 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 - Bit-perfect FLAC playback via direct ALSA `hw:` — bypasses PipeWire/PulseAudio entirely
 - Auto-negotiates the best PCM format your DAC supports
 - Auto-advances through the queue; respects shuffle mode
+- Seek forward/back 10 seconds with `←`/`→`
 - Volume control and output device selection, both persisted between sessions
+- Session and playback position restored on next launch
 - MPRIS2 registration — media keys and `playerctl` work without TUI focus
+- Daemon mode — run headless in the background, control via TUI client or playerctl
 
 ---
 
@@ -80,6 +95,8 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 | `↓` / `j`      | Move cursor down                             |
 | `Enter`        | Play selected track / load mix / confirm     |
 | `Space`        | Pause / resume                               |
+| `←`            | Seek back 10 seconds                         |
+| `→`            | Seek forward 10 seconds                      |
 | `s`            | Cycle shuffle mode (Off → Shuffle → Random)  |
 | `r`            | Load radio playlist for selected track       |
 | `f`            | Toggle favorite on selected track            |
@@ -128,6 +145,8 @@ Auto-detection scans `/proc/asound/cards`. Any ALSA-visible device can be select
 ## Further reading
 
 - [Architecture & audio pipeline](docs/architecture.md)
+- [Client-server architecture & daemon mode](docs/client-server.md)
+- [MPRIS2 support](docs/mpris2.md)
 - [DAC compatibility](docs/dac-compatibility.md)
 - [Media keys & MPRIS2 setup](docs/media-keys.md)
 - [Browser URL handler troubleshooting](docs/browser-url-handler.md)

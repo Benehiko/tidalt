@@ -439,10 +439,12 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 	default:
 	}
 
+	// releaseReservation is passed into playbackLoop which manages it for the
+	// lifetime of playback (releasing on pause, reacquiring on resume, and
+	// releasing again on final exit via defer).
 	go func() {
 		defer close(doneCh)
-		defer releaseReservation()
-		p.playbackLoop(ctx, url, device)
+		p.playbackLoop(ctx, url, device, releaseReservation)
 	}()
 	return doneCh, nil
 }
@@ -485,12 +487,26 @@ func openStream(ctx context.Context, url string) (*http.Response, *flac.Stream, 
 	return resp, stream, nil
 }
 
-func (p *Player) playbackLoop(ctx context.Context, url, device string) {
+// closeALSA drains and closes an ALSA handle.
+func closeALSA(ah *alsaHandle) {
+	C.snd_pcm_drain(ah.pcm)
+	C.snd_pcm_close(ah.pcm)
+}
+
+func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseReservation func()) {
 	logger.L.Debug("playbackLoop start", "url", url)
+
+	cardNum, err := parseCardNum(device)
+	if err != nil {
+		logger.L.Error("playbackLoop: cannot parse card number", "device", device, "err", err)
+		releaseReservation()
+		return
+	}
 
 	resp, stream, err := openStream(ctx, url)
 	if err != nil {
 		logger.L.Error("failed to open stream", "err", err)
+		releaseReservation()
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -520,9 +536,25 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 	p.totalSamples = info.NSamples
 	p.muInfo.Unlock()
 
+	// reacquireALSA re-claims the D-Bus reservation and reopens the ALSA
+	// device. Used after releasing on pause.
+	reacquireALSA := func() (*alsaHandle, func(), error) {
+		rel, rerr := reserveALSADevice(cardNum)
+		if rerr != nil {
+			return nil, nil, rerr
+		}
+		a, aerr := openALSA(device, channels, sampleRate, bits)
+		if aerr != nil {
+			rel()
+			return nil, nil, aerr
+		}
+		return a, rel, nil
+	}
+
 	ah, err := openALSA(device, channels, sampleRate, bits)
 	if err != nil {
 		logger.L.Error("openALSA failed", "device", device, "err", err)
+		releaseReservation()
 		return
 	}
 	logger.L.Debug("ALSA opened",
@@ -534,9 +566,11 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 		"period_size", ah.periodSize,
 		"buffer_size", ah.bufferSize,
 	)
+	// ah and releaseReservation are both reassigned on pause/resume.
+	// The defer captures them by pointer so it always closes the current handle.
 	defer func() {
-		C.snd_pcm_drain(ah.pcm)
-		C.snd_pcm_close(ah.pcm)
+		closeALSA(ah)
+		releaseReservation()
 	}()
 
 	bps := ah.bytesPerSample
@@ -645,12 +679,28 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 				default:
 				}
 
-				// Check pause.
+				// Check pause: release the ALSA device so PipeWire / other
+				// apps can use it while we are idle, then reacquire on resume.
 				if atomic.LoadUint32(&p.paused) == 1 {
 					C.snd_pcm_drop(ah.pcm)
+					closeALSA(ah)
+					releaseReservation()
+					logger.L.Debug("paused: ALSA device released")
+
 					for atomic.LoadUint32(&p.paused) == 1 {
 						select {
 						case target := <-p.seekCh:
+							// Reacquire before handling the seek.
+							newAH, newRel, raErr := reacquireALSA()
+							if raErr != nil {
+								logger.L.Error("reacquire ALSA after pause+seek failed", "err", raErr)
+								close(stopDecode)
+								for range pcmCh {
+								}
+								return 0, false
+							}
+							ah = newAH
+							releaseReservation = newRel
 							return returnSeek(target)
 						case <-ctx.Done():
 							close(stopDecode)
@@ -660,7 +710,19 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 						case <-time.After(20 * time.Millisecond):
 						}
 					}
-					C.snd_pcm_prepare(ah.pcm)
+
+					// Resume: reacquire the device.
+					newAH, newRel, raErr := reacquireALSA()
+					if raErr != nil {
+						logger.L.Error("reacquire ALSA on resume failed", "err", raErr)
+						close(stopDecode)
+						for range pcmCh {
+						}
+						return 0, false
+					}
+					ah = newAH
+					releaseReservation = newRel
+					logger.L.Debug("resumed: ALSA device reacquired")
 					break
 				}
 
