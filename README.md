@@ -19,6 +19,7 @@ All three modes share the same playback engine. The daemon holds exclusive acces
 ## Install
 
 Pre-built packages are available on the [releases page](https://github.com/Benehiko/tidalt/releases).
+The official Docker image is available at [`benehiko/tidalt`](https://hub.docker.com/r/benehiko/tidalt) — see [docs/docker.md](docs/docker.md) for usage.
 
 ### Arch Linux
 
@@ -191,6 +192,7 @@ Auto-detection scans `/proc/asound/cards`. Any ALSA-visible device can be select
 ## Further reading
 
 - [Installation (packages, source, post-install setup)](docs/installation.md)
+- [Running in Docker](docs/docker.md)
 - [Architecture & audio pipeline](docs/architecture.md)
 - [Client-server architecture & daemon mode](docs/client-server.md)
 - [MPRIS2 support](docs/mpris2.md)

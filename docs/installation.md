@@ -39,6 +39,19 @@ sudo dnf install tidalt-*.rpm
 
 ---
 
+## Docker
+
+The official image is published to Docker Hub at `benehiko/tidalt`:
+
+```bash
+docker pull benehiko/tidalt:latest
+```
+
+See [docker.md](docker.md) for full usage instructions, including how to expose
+your ALSA devices inside the container.
+
+---
+
 ## From source
 
 ### Prerequisites
@@ -54,7 +67,7 @@ sudo dnf install golang alsa-lib-devel  # Fedora
 ### go install
 
 ```bash
-go install github.com/Benehiko/tidalt/cmd/tidalt@latest
+go install github.com/Benehiko/tidalt/v3/cmd/tidalt@latest
 ```
 
 The binary is placed in `$GOPATH/bin` (typically `~/go/bin`). Make sure that
