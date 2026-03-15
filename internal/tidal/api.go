@@ -16,6 +16,20 @@ import (
 // ErrNotFound is returned by GetTrack when the API responds with 404.
 var ErrNotFound = errors.New("not found")
 
+// CoverURL returns the HTTPS URL for the album cover image at the given size.
+// cover is the UUID string returned in Track.Album.Cover.
+// Typical sizes: "80x80", "160x160", "320x320", "640x640", "1280x1280".
+// Returns "" when cover is empty.
+func CoverURL(cover, size string) string {
+	if cover == "" {
+		return ""
+	}
+	// Tidal stores the UUID with dashes replaced by underscores in the JSON;
+	// the image CDN path uses forward slashes between groups.
+	dashed := strings.ReplaceAll(cover, "-", "/")
+	return "https://resources.tidal.com/images/" + dashed + "/" + size + ".jpg"
+}
+
 // apiErr returns a formatted error from a non-2xx response. It tries to extract
 // the human-readable "userMessage" field from the Tidal JSON error body; if
 // that is not present it falls back to the raw body text.
@@ -39,6 +53,7 @@ type Track struct {
 	Album struct {
 		ID    int    `json:"id"`
 		Title string `json:"title"`
+		Cover string `json:"cover"` // UUID, e.g. "a3f1d2e4-1234-5678-abcd-ef0123456789"
 	} `json:"album"`
 	Duration int    `json:"duration"`
 	URL      string `json:"url"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
 	"math/rand/v2"
 	"strings"
 	"time"
@@ -126,6 +127,10 @@ type Model struct {
 	// next track starts. Set from the persisted last position on startup,
 	// consumed once by nowPlayingMsg.
 	restorePosition float64
+
+	// Cover art panel.
+	coverImage    image.Image // nil while loading or unavailable
+	coverCacheKey string      // UUID of the currently displayed cover
 }
 
 func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsStore, srv *mpris.Server, openURL string) Model {
@@ -222,15 +227,23 @@ type (
 	clearErrMsg        struct{}
 	tickMsg            time.Time
 	barTickMsg         time.Time
-	nowPlayingMsg      struct{ done <-chan struct{} }
-	trackDoneMsg       struct{}
-	mprisMsg           mpris.Event
-	favoriteMsg        struct {
+	nowPlayingMsg      struct {
+		done  <-chan struct{}
+		track *tidal.Track // refreshed track metadata (may be nil)
+	}
+	trackDoneMsg struct{}
+	mprisMsg     mpris.Event
+	favoriteMsg  struct {
 		trackID int
 		added   bool
 	}
 	// parentStateMsg carries the live state polled from the parent instance.
 	parentStateMsg mpris.PlayerState
+	// coverLoadedMsg delivers a fetched album cover image.
+	coverLoadedMsg struct {
+		key string
+		img image.Image
+	}
 )
 
 // applyShuffle reorders m.tracks according to the current shuffle mode and
@@ -305,14 +318,37 @@ func (m *Model) playTrackCmd(track tidal.Track) tea.Cmd {
 	m.advancing = true // suppresses any stale trackDoneMsg until nowPlayingMsg resets it
 	m.restorePosition = 0
 	_ = m.store.SaveLastTrackID(track.ID)
+	ctx := m.ctx
+	client := m.client
 	return func() tea.Msg {
-		url, err := m.client.GetStreamURL(m.ctx, track.ID)
+		// Fetch fresh track metadata in parallel with the stream URL so we
+		// always have a cover UUID even when the cached entry predates cover support.
+		type freshResult struct {
+			track *tidal.Track
+			err   error
+		}
+		freshCh := make(chan freshResult, 1)
+		if track.Album.Cover == "" {
+			go func() {
+				t, err := client.GetTrack(ctx, fmt.Sprintf("%d", track.ID))
+				freshCh <- freshResult{t, err}
+			}()
+		} else {
+			freshCh <- freshResult{&track, nil}
+		}
+
+		url, err := client.GetStreamURL(ctx, track.ID)
 		if err != nil {
 			return errMsg(err)
 		}
 		done, err := m.player.Play(url)
 		if err != nil {
 			return errMsg(err)
+		}
+
+		res := <-freshCh
+		if res.err == nil && res.track != nil {
+			return nowPlayingMsg{done: done, track: res.track}
 		}
 		return nowPlayingMsg{done: done}
 	}
@@ -497,6 +533,38 @@ func pollParentState(mc *mpris.Client) tea.Cmd {
 		}
 		return parentStateMsg(ps)
 	}
+}
+
+// fetchCoverCmd downloads the album cover for the given track and delivers a
+// coverLoadedMsg. It is a no-op when cover is empty.
+func fetchCoverCmd(cover string) tea.Cmd {
+	if cover == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		img, err := fetchCoverImage(tidal.CoverURL(cover, "640x640"))
+		if err != nil {
+			return errMsg(err)
+		}
+		return coverLoadedMsg{key: cover, img: img}
+	}
+}
+
+// maybeUpdateCover checks whether the cover for t differs from the currently
+// cached key. If so it clears the cached image and returns a fetch command.
+// If the key is the same (fetch already in-flight or image already loaded),
+// it does nothing. Call this whenever m.currentTrack changes.
+func (m *Model) maybeUpdateCover(t *tidal.Track) tea.Cmd {
+	if t == nil {
+		return nil
+	}
+	cover := t.Album.Cover
+	if cover == "" || cover == m.coverCacheKey {
+		return nil
+	}
+	m.coverImage = nil
+	m.coverCacheKey = cover
+	return fetchCoverCmd(cover)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -764,13 +832,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case nowPlayingMsg:
 		m.advancing = false
+		// Update currentTrack with refreshed metadata (includes cover UUID).
+		if msg.track != nil {
+			m.currentTrack = msg.track
+			_ = m.store.CacheTrack(msg.track.ID, *msg.track)
+		}
 		m.pushState()
 		if m.restorePosition > 0 {
 			pos := m.restorePosition
 			m.restorePosition = 0
 			_ = m.player.Seek(pos)
 		}
-		return m, waitForTrackDone(msg.done)
+		return m, tea.Batch(waitForTrackDone(msg.done), m.maybeUpdateCover(m.currentTrack))
+
+	case coverLoadedMsg:
+		if msg.key == m.coverCacheKey {
+			m.coverImage = msg.img
+		}
 
 	case barTickMsg:
 		m.barFrame++
@@ -793,10 +871,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case parentStateMsg:
 		ps := mpris.PlayerState(msg)
 		// Update current track from parent.
+		var coverCmd tea.Cmd
 		if ps.CurrentTrackJSON != "" {
 			var t tidal.Track
 			if err := json.Unmarshal([]byte(ps.CurrentTrackJSON), &t); err == nil {
 				m.currentTrack = &t
+				coverCmd = m.maybeUpdateCover(m.currentTrack)
 			}
 		} else {
 			m.currentTrack = nil
@@ -832,6 +912,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				m.shuffleMode = ShuffleOff
 			}
+		}
+		if coverCmd != nil {
+			return m, coverCmd
 		}
 
 	case trackDoneMsg:
@@ -1245,10 +1328,29 @@ func (m Model) View() string {
 		listHeight = 1
 	}
 
+	// Panel: 36 columns for cover art, centered in the right half of the
+	// terminal. The list takes the left half; the remaining space is split as
+	// equal gutters on either side of the panel.
+	const panelW = 36
+	listW := m.width
+	gutterL := 0 // left gutter between list and panel
+	if m.width >= panelW*2+4 {
+		// Right zone = everything to the right of the list.
+		rightZone := m.width / 2
+		listW = m.width - rightZone
+		gutterL = (rightZone - panelW) / 2
+		if gutterL < 1 {
+			gutterL = 1
+		}
+	}
+
+	var listLines []string
+	var footer string
+
 	switch m.state {
 	case StateDeviceSelect:
 		if len(m.devices) == 0 {
-			s += "  No playback devices found.\n"
+			listLines = append(listLines, "  No playback devices found.")
 		} else {
 			start, end := visibleWindow(m.cursor, len(m.devices), listHeight)
 			for i := start; i < end; i++ {
@@ -1263,13 +1365,14 @@ func (m Model) View() string {
 				}
 				line := fmt.Sprintf(" %s %s  %s%s", cur, d.HWName, d.LongName, selected)
 				if m.cursor == i {
-					s += cursorStyle.Render(line) + "\n"
+					listLines = append(listLines, cursorStyle.Render(line))
 				} else {
-					s += line + "\n"
+					listLines = append(listLines, line)
 				}
 			}
 		}
-		s += "\n [↑/↓] Navigate | [ENTER] Select | [ESC] Cancel | [q] Quit\n"
+		footer = "\n [↑/↓] Navigate | [ENTER] Select | [ESC] Cancel | [q] Quit\n"
+
 	case StateMixes:
 		items := m.mixes
 		start, end := visibleWindow(m.cursor, len(items), listHeight)
@@ -1281,17 +1384,18 @@ func (m Model) View() string {
 			}
 			line := fmt.Sprintf(" %s %s (%s)", cursor, mix.Title, mix.SubTitle)
 			if m.cursor == i {
-				s += cursorStyle.Render(line) + "\n"
+				listLines = append(listLines, cursorStyle.Render(line))
 			} else {
-				s += line + "\n"
+				listLines = append(listLines, line)
 			}
 		}
-		s += "\n [TAB] Switch Tab | [ENTER] Play/Select | [SPACE] Pause | [9/0] Vol | [d] Device | [q] Quit\n"
+		footer = "\n [TAB] Switch Tab | [ENTER] Play/Select | [SPACE] Pause | [9/0] Vol | [d] Device | [q] Quit\n"
+
 	case StateSearch:
 		if m.searchLoading {
-			s += "  Searching...\n"
+			listLines = append(listLines, "  Searching...")
 		} else if len(m.searchTracks) == 0 && m.searchInput.Value() != "" {
-			s += "  No results.\n"
+			listLines = append(listLines, "  No results.")
 		} else {
 			start, end := visibleWindow(m.searchCursor, len(m.searchTracks), listHeight)
 			for i := start; i < end; i++ {
@@ -1306,13 +1410,14 @@ func (m Model) View() string {
 				}
 				line := fmt.Sprintf(" %s %s %s - %s  [%s]", cur, fav, track.Title, track.Artist.Name, track.Album.Title)
 				if m.searchCursor == i {
-					s += cursorStyle.Render(line) + "\n"
+					listLines = append(listLines, cursorStyle.Render(line))
 				} else {
-					s += line + "\n"
+					listLines = append(listLines, line)
 				}
 			}
 		}
-		s += "\n [TAB] Switch Tab | [ENTER] Search / Play | [↑/↓] Navigate | [SPACE] Pause | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
+		footer = "\n [TAB] Switch Tab | [ENTER] Search / Play | [↑/↓] Navigate | [SPACE] Pause | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
+
 	default:
 		items := m.tracks
 		start, end := visibleWindow(m.cursor, len(items), listHeight)
@@ -1328,13 +1433,65 @@ func (m Model) View() string {
 			}
 			line := fmt.Sprintf(" %s %s %s - %s", cursor, fav, track.Title, track.Artist.Name)
 			if m.cursor == i {
-				s += cursorStyle.Render(line) + "\n"
+				listLines = append(listLines, cursorStyle.Render(truncateStr(line, listW)))
 			} else {
-				s += line + "\n"
+				listLines = append(listLines, truncateStr(line, listW))
 			}
 		}
-		s += "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [s] Shuffle | [r] Radio | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
+		footer = "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [s] Shuffle | [r] Radio | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
 	}
 
+	// Build panel and join with list lines side-by-side.
+	if gutterL > 0 && m.currentTrack != nil {
+		title := m.currentTrack.Title
+		artist := m.currentTrack.Artist.Name
+		album := m.currentTrack.Album.Title
+		panel := coverPanelLines(m.coverImage, title, artist, album, panelW, listHeight)
+		gutter := strings.Repeat(" ", gutterL)
+
+		for i := 0; i < listHeight; i++ {
+			l := ""
+			if i < len(listLines) {
+				l = listLines[i]
+			}
+			r := ""
+			if i < len(panel) {
+				r = panel[i]
+			}
+			// Pad list column to listW so the panel always starts at a fixed column.
+			lRunes := []rune(stripANSI(l))
+			pad := listW - len(lRunes)
+			if pad < 0 {
+				pad = 0
+			}
+			s += l + strings.Repeat(" ", pad) + gutter + r + "\n"
+		}
+	} else {
+		for _, line := range listLines {
+			s += line + "\n"
+		}
+	}
+
+	s += footer
 	return s
+}
+
+// stripANSI returns s with all ANSI escape sequences removed, for measuring
+// visible display width.
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		switch {
+		case inEsc:
+			if r == 'm' {
+				inEsc = false
+			}
+		case r == '\x1b':
+			inEsc = true
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
