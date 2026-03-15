@@ -1,0 +1,56 @@
+# Maintainer: Benehiko <https://github.com/Benehiko>
+pkgname=tidalt
+pkgver=3.0.0
+pkgrel=1
+pkgdesc="Tidal music player for Linux — bit-perfect FLAC via ALSA, MPRIS2, daemon mode"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Benehiko/tidalt"
+license=('Apache-2.0')
+depends=('alsa-lib' 'dbus')
+makedepends=('go>=1.26')
+optdepends=(
+    'playerctl: control playback from the command line'
+    'kdeconnect: control playback from a phone (MPRIS2 bridge)'
+)
+source=("$pkgname-$pkgver.tar.gz::https://github.com/Benehiko/tidalt/archive/refs/tags/v$pkgver.tar.gz")
+b2sums=('SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    # Download module dependencies into the build cache.
+    # Use -mod=mod so the vendor directory is not required.
+    GOFLAGS="-mod=mod" go mod download
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export CGO_ENABLED=1
+    export CGO_CFLAGS="${CFLAGS}"
+    export CGO_LDFLAGS="${LDFLAGS}"
+    go build \
+        -trimpath \
+        -buildmode=pie \
+        -mod=mod \
+        -ldflags "-linkmode=external -X main.version=v$pkgver" \
+        -o tidalt \
+        ./cmd/tidalt
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    go test ./...
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+
+    # Binary
+    install -Dm755 tidalt "$pkgdir/usr/bin/tidalt"
+
+    # Desktop file (for tidal:// URL handler; users run 'tidalt setup' to activate)
+    install -Dm644 cmd/tidalt/tidalt.desktop \
+        "$pkgdir/usr/share/applications/tidalt.desktop"
+
+    # License
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/Apache-2.0"
+}

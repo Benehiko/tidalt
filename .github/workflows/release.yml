@@ -9,8 +9,9 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build linux/${{ matrix.goarch }}
+  # ── Raw binaries (amd64 + arm64) ─────────────────────────────────────────
+  binary:
+    name: Build binary linux/${{ matrix.goarch }}
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -38,17 +39,93 @@ jobs:
           name: tidalt-linux-${{ matrix.goarch }}
           path: tidalt-linux-${{ matrix.goarch }}
 
-  release:
-    name: Create Release
-    needs: build
+  # ── Arch Linux package ────────────────────────────────────────────────────
+  arch:
+    name: Build Arch package
     runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install build tools
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm base-devel go alsa-lib git sudo
+
+      # makepkg refuses to run as root; create an unprivileged build user.
+      - name: Create build user
+        run: |
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
+
+      - uses: actions/checkout@v4
+
+      - name: Set pkgver from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" packaging/arch/PKGBUILD
+
+      - name: Copy PKGBUILD into build home
+        run: |
+          cp packaging/arch/PKGBUILD /home/builder/PKGBUILD
+          chown builder /home/builder/PKGBUILD
+
+      - name: Build package
+        run: sudo -u builder bash -c 'cd /home/builder && makepkg --noconfirm --syncdeps'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-pkg
+          path: /home/builder/*.pkg.tar.zst
+
+  # ── Debian package ────────────────────────────────────────────────────────
+  debian:
+    name: Build Debian package
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debhelper libasound2-dev
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set version in changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "1s/.*/tidalt (${VERSION}-1) unstable; urgency=medium/" \
+            packaging/debian/changelog
+
+      - name: Copy debian/ into place
+        run: cp -r packaging/debian debian
+
+      - name: Build .deb
+        run: dpkg-buildpackage -us -uc -b
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-pkg
+          path: ../*.deb
+
+  # ── GitHub Release ────────────────────────────────────────────────────────
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: [binary, arch, debian]
+
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+          path: dist/
 
-      - name: Create release
+      - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          files: tidalt-linux-*
+          files: dist/*
           generate_release_notes: true

@@ -18,55 +18,39 @@ All three modes share the same playback engine. The daemon holds exclusive acces
 
 ## Install
 
-### Dependencies
+Pre-built packages are available on the [releases page](https://github.com/Benehiko/tidalt/releases).
 
-Requires Go 1.21+ and ALSA development headers:
-
-```bash
-sudo pacman -S alsa-lib        # Arch
-sudo apt install libasound2-dev # Debian / Ubuntu
-sudo dnf install alsa-lib-devel # Fedora
-```
-
-### Install
+### Arch Linux
 
 ```bash
-go install github.com/Benehiko/tidalt/cmd/tidalt@latest
+sudo pacman -U tidalt-*.pkg.tar.zst
 ```
 
-### Register the tidal:// URL handler
+### Debian / Ubuntu
 
-The `setup` subcommand installs the `.desktop` file and registers the
-`tidal://` scheme so clicking **"Open in desktop app"** on tidal.com opens
-the track directly in tidalt. It prints every action before running it:
-
-```
-$ tidalt setup
-  -> Creating directory /home/user/.local/share/applications
-  -> Writing /home/user/.local/share/applications/tidalt.desktop
-  -> $ xdg-mime default tidalt.desktop x-scheme-handler/tidal
-  -> $ update-desktop-database /home/user/.local/share/applications
-
-Setup complete.
-Clicking "Open in desktop app" on tidal.com will now open tidalt.
+```bash
+sudo dpkg -i tidalt_*.deb
+sudo apt-get install -f
 ```
 
-Some browsers (notably Firefox and Librewolf) apply additional protocol
-filtering on top of XDG and require a one-time browser-side configuration
-step. See [docs/browser-url-handler.md](docs/browser-url-handler.md) for
-per-browser instructions and troubleshooting.
+See [docs/installation.md](docs/installation.md) for building packages locally
+or installing from source.
 
-### Run as a background daemon (optional)
+### Post-install
 
-Install tidalt as a systemd user service so it runs silently in the background
-from login, with no terminal window:
+Register the `tidal://` URL handler so clicking **"Open in desktop app"** on
+tidal.com opens the track directly in tidalt:
+
+```bash
+tidalt setup
+```
+
+Optionally install tidalt as a systemd user service (starts at login, no
+terminal window):
 
 ```bash
 tidalt setup --daemon
 ```
-
-Then open the TUI from any terminal with `tidalt`, or control playback with
-`playerctl`. See [docs/client-server.md](docs/client-server.md) for details.
 
 ---
 
@@ -168,6 +152,7 @@ Auto-detection scans `/proc/asound/cards`. Any ALSA-visible device can be select
 
 ## Further reading
 
+- [Installation (packages, source, post-install setup)](docs/installation.md)
 - [Architecture & audio pipeline](docs/architecture.md)
 - [Client-server architecture & daemon mode](docs/client-server.md)
 - [MPRIS2 support](docs/mpris2.md)
