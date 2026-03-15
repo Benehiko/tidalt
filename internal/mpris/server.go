@@ -158,6 +158,7 @@ func Start(ctx context.Context) (*Server, error) {
 	player := &mediaPlayer2Player{ch: ch}
 	props := &properties{state: st}
 	app := &tidalApp{ch: ch, state: st}
+	intro := &introspectable{}
 
 	for _, export := range []struct {
 		obj   any
@@ -167,6 +168,7 @@ func Start(ctx context.Context) (*Server, error) {
 		{player, "org.mpris.MediaPlayer2.Player"},
 		{props, "org.freedesktop.DBus.Properties"},
 		{app, appIface},
+		{intro, "org.freedesktop.DBus.Introspectable"},
 	} {
 		if err := conn.Export(export.obj, objectPath, export.iface); err != nil {
 			_ = conn.Close()
@@ -416,4 +418,113 @@ func (p *properties) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error)
 
 func (p *properties) Set(iface, prop string, val dbus.Variant) *dbus.Error {
 	return dbus.NewError("org.freedesktop.DBus.Error.PropertyReadOnly", nil)
+}
+
+// --- org.freedesktop.DBus.Introspectable ------------------------------------
+//
+// Returning introspection XML lets tools like busctl, d-feet, and playerctl
+// discover exactly which interfaces, methods, signals, and properties tidalt
+// exposes. This is the canonical machine-readable record of MPRIS2 support.
+
+type introspectable struct{}
+
+// introspectionXML describes every interface implemented at /org/mpris/MediaPlayer2.
+// Derived from the MPRIS2 specification; only the subset actually implemented
+// is listed — omitted methods/properties (e.g. TrackList, Playlists, Seek,
+// SetPosition) are intentionally absent so clients know not to call them.
+const introspectionXML = `<!DOCTYPE node PUBLIC
+  "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node name="/org/mpris/MediaPlayer2">
+
+  <!-- ── org.mpris.MediaPlayer2 ─────────────────────────────────────── -->
+  <interface name="org.mpris.MediaPlayer2">
+    <method name="Raise"/>
+    <method name="Quit"/>
+    <property name="Identity"            type="s"  access="read"/>
+    <property name="CanQuit"             type="b"  access="read"/>
+    <property name="CanRaise"            type="b"  access="read"/>
+    <property name="HasTrackList"        type="b"  access="read"/>
+    <property name="SupportedUriSchemes" type="as" access="read"/>
+    <property name="SupportedMimeTypes"  type="as" access="read"/>
+  </interface>
+
+  <!-- ── org.mpris.MediaPlayer2.Player ─────────────────────────────── -->
+  <interface name="org.mpris.MediaPlayer2.Player">
+    <!-- Implemented methods -->
+    <method name="PlayPause"/>
+    <method name="Play"/>
+    <method name="Pause"/>
+    <method name="Stop"/>
+    <method name="Next"/>
+    <method name="Previous"/>
+
+    <!-- NOT implemented: Seek, SetPosition, OpenUri -->
+
+    <!-- Live properties (via org.freedesktop.DBus.Properties) -->
+    <property name="PlaybackStatus" type="s"  access="read"/>
+    <property name="Rate"           type="d"  access="read"/>
+    <property name="MinimumRate"    type="d"  access="read"/>
+    <property name="MaximumRate"    type="d"  access="read"/>
+    <property name="CanControl"     type="b"  access="read"/>
+    <property name="CanPlay"        type="b"  access="read"/>
+    <property name="CanPause"       type="b"  access="read"/>
+    <property name="CanGoNext"      type="b"  access="read"/>
+    <property name="CanGoPrevious"  type="b"  access="read"/>
+    <property name="CanSeek"        type="b"  access="read"/>
+
+    <!-- NOT implemented: Metadata, Shuffle, LoopStatus, Volume, Position -->
+    <!-- NOT implemented: Seeked signal -->
+  </interface>
+
+  <!-- ── org.freedesktop.DBus.Properties ───────────────────────────── -->
+  <interface name="org.freedesktop.DBus.Properties">
+    <method name="Get">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="property_name"  type="s" direction="in"/>
+      <arg name="value"          type="v" direction="out"/>
+    </method>
+    <method name="GetAll">
+      <arg name="interface_name" type="s"     direction="in"/>
+      <arg name="props"          type="a{sv}" direction="out"/>
+    </method>
+    <method name="Set">
+      <arg name="interface_name" type="s" direction="in"/>
+      <arg name="property_name"  type="s" direction="in"/>
+      <arg name="value"          type="v" direction="in"/>
+    </method>
+  </interface>
+
+  <!-- ── org.freedesktop.DBus.Introspectable ───────────────────────── -->
+  <interface name="org.freedesktop.DBus.Introspectable">
+    <method name="Introspect">
+      <arg name="xml_data" type="s" direction="out"/>
+    </method>
+  </interface>
+
+  <!-- ── io.tidalt.App (private) ────────────────────────────────────── -->
+  <!-- Used by tidalt client instances and the 'tidalt play' subcommand. -->
+  <interface name="io.tidalt.App">
+    <method name="OpenURL">
+      <arg name="url" type="s" direction="in"/>
+    </method>
+    <method name="PlayTrackID">
+      <arg name="trackID" type="i" direction="in"/>
+    </method>
+    <method name="GetState">
+      <arg name="currentTrackJSON" type="s" direction="out"/>
+      <arg name="playlistJSON"     type="s" direction="out"/>
+      <arg name="playbackStatus"   type="s" direction="out"/>
+      <arg name="position"         type="d" direction="out"/>
+      <arg name="duration"         type="d" direction="out"/>
+      <arg name="volume"           type="d" direction="out"/>
+      <arg name="device"           type="s" direction="out"/>
+      <arg name="shuffleMode"      type="s" direction="out"/>
+    </method>
+  </interface>
+
+</node>`
+
+func (i *introspectable) Introspect() (string, *dbus.Error) {
+	return introspectionXML, nil
 }
