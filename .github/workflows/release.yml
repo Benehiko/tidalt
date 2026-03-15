@@ -86,7 +86,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install ALSA dev headers and debhelper
         run: |
           sudo apt-get update
           sudo apt-get install -y debhelper libasound2-dev
@@ -94,6 +94,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - name: Build binary
+        run: |
+          CGO_ENABLED=1 go build \
+            -trimpath \
+            -buildmode=pie \
+            -ldflags "-s -w -linkmode=external" \
+            -o tidalt-linux-amd64 \
+            ./cmd/tidalt
 
       - name: Set version in changelog
         run: |

@@ -1,33 +1,34 @@
 #!/usr/bin/make -f
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
+#
+# The binary is pre-built by the CI pipeline (or by the caller) and placed at
+# tidalt-linux-<arch> before dpkg-buildpackage is invoked. This rules file
+# only installs artefacts — it does not invoke go build.
 
 export DH_VERBOSE = 1
-export CGO_ENABLED = 1
 
-# Pass hardening flags through to CGO.
-export DEB_BUILD_MAINT_OPTIONS = hardening=+all
-DPKG_EXPORT_BUILDFLAGS = 1
-include /usr/share/dpkg/buildflags.mk
+DEB_HOST_ARCH ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
 
-# Canonical upstream version (without the Debian revision).
-VERSION := $(shell dpkg-parsechangelog -S Version | cut -d- -f1)
+# Map Debian arch names to the filenames produced by the Go build step.
+ifeq ($(DEB_HOST_ARCH),amd64)
+  PREBUILT_BINARY := tidalt-linux-amd64
+else ifeq ($(DEB_HOST_ARCH),arm64)
+  PREBUILT_BINARY := tidalt-linux-arm64
+else
+  $(error Unsupported architecture: $(DEB_HOST_ARCH))
+endif
 
 %:
-	dh $@ --buildsystem=golang --with=golang
+	dh $@
 
 override_dh_auto_build:
-	go build \
-		-trimpath \
-		-buildmode=pie \
-		-ldflags "-linkmode=external -X main.version=v$(VERSION)" \
-		-o debian/tidalt/usr/bin/tidalt \
-		./cmd/tidalt
+	# Nothing to build — binary was compiled before dpkg-buildpackage was called.
 
 override_dh_auto_test:
-	go test ./...
+	# Tests are run in the separate CI test job, not during packaging.
 
 override_dh_auto_install:
-	# Binary is already placed by dh_auto_build above.
-	# Desktop file (for tidal:// URL handler).
+	install -Dm755 $(PREBUILT_BINARY) \
+		debian/tidalt/usr/bin/tidalt
 	install -Dm644 cmd/tidalt/tidalt.desktop \
 		debian/tidalt/usr/share/applications/tidalt.desktop

@@ -2,7 +2,7 @@ Source: tidalt
 Section: sound
 Priority: optional
 Maintainer: Benehiko <https://github.com/Benehiko>
-Build-Depends: debhelper-compat (= 13), golang-go (>= 1.26), libasound2-dev
+Build-Depends: debhelper-compat (= 13), libasound2-dev
 Standards-Version: 4.6.2
 Homepage: https://github.com/Benehiko/tidalt
 Rules-Requires-Root: no

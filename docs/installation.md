@@ -126,11 +126,14 @@ makepkg -g >> PKGBUILD
 
 ### Debian — dpkg-buildpackage
 
-Install build dependencies first:
+Install build dependencies:
 
 ```bash
-sudo apt install debhelper golang-go libasound2-dev
+sudo apt install debhelper libasound2-dev
 ```
+
+Go 1.26+ is required to compile the binary. Install it from
+[go.dev/dl](https://go.dev/dl/) and ensure it is first on your `PATH`.
 
 Then build from a release tarball:
 
@@ -139,6 +142,12 @@ VERSION=3.0.0
 curl -L "https://github.com/Benehiko/tidalt/archive/refs/tags/v${VERSION}.tar.gz" \
     | tar xz
 cd "tidalt-${VERSION}"
+
+# Compile the binary first — the debian/rules file installs it directly.
+CGO_ENABLED=1 go build -trimpath -buildmode=pie \
+    -ldflags "-s -w -linkmode=external" \
+    -o tidalt-linux-amd64 ./cmd/tidalt
+
 cp -r /path/to/repo/packaging/debian debian
 dpkg-buildpackage -us -uc -b
 sudo dpkg -i ../tidalt_${VERSION}-1_amd64.deb
