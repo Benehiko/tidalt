@@ -22,6 +22,8 @@ import (
 	"sync"
 
 	"github.com/godbus/dbus/v5"
+
+	"github.com/Benehiko/tidalt/internal/tidal"
 )
 
 // Cmd identifies which media control event occurred.
@@ -355,6 +357,28 @@ type properties struct {
 	state *sharedState
 }
 
+// buildMetadata constructs the MPRIS2 Metadata map from the current track JSON.
+// Returns an empty map when no track is playing.
+func buildMetadata(trackJSON string) map[string]dbus.Variant {
+	meta := map[string]dbus.Variant{
+		"mpris:trackid": dbus.MakeVariant(dbus.ObjectPath("/org/mpris/MediaPlayer2/TrackList/NoTrack")),
+	}
+	if trackJSON == "" {
+		return meta
+	}
+	var t tidal.Track
+	if err := json.Unmarshal([]byte(trackJSON), &t); err != nil {
+		return meta
+	}
+	meta["mpris:trackid"] = dbus.MakeVariant(dbus.ObjectPath(fmt.Sprintf("/org/mpris/MediaPlayer2/Track/%d", t.ID)))
+	meta["xesam:title"] = dbus.MakeVariant(t.Title)
+	meta["xesam:artist"] = dbus.MakeVariant([]string{t.Artist.Name})
+	meta["xesam:album"] = dbus.MakeVariant(t.Album.Title)
+	// MPRIS2 requires length in microseconds.
+	meta["mpris:length"] = dbus.MakeVariant(int64(t.Duration) * 1_000_000)
+	return meta
+}
+
 // playerProps returns the live property map for org.mpris.MediaPlayer2.Player.
 func (p *properties) playerProps() map[string]dbus.Variant {
 	ps := p.state.get()
@@ -364,6 +388,7 @@ func (p *properties) playerProps() map[string]dbus.Variant {
 	}
 	return map[string]dbus.Variant{
 		"PlaybackStatus": dbus.MakeVariant(status),
+		"Metadata":       dbus.MakeVariant(buildMetadata(ps.CurrentTrackJSON)),
 		"CanPlay":        dbus.MakeVariant(true),
 		"CanPause":       dbus.MakeVariant(true),
 		"CanGoNext":      dbus.MakeVariant(true),
@@ -473,7 +498,9 @@ const introspectionXML = `<!DOCTYPE node PUBLIC
     <property name="CanGoPrevious"  type="b"  access="read"/>
     <property name="CanSeek"        type="b"  access="read"/>
 
-    <!-- NOT implemented: Metadata, Shuffle, LoopStatus, Volume, Position -->
+    <property name="Metadata"       type="a{sv}" access="read"/>
+
+    <!-- NOT implemented: Shuffle, LoopStatus, Volume, Position -->
     <!-- NOT implemented: Seeked signal -->
   </interface>
 

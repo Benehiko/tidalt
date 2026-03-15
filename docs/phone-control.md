@@ -178,15 +178,12 @@ Through the KDE Connect / GSConnect MPRIS bridge:
 | Play / pause | Yes |
 | Next track | Yes |
 | Previous track | Yes |
-| See current track title & artist | Yes (via MPRIS2 `Metadata`) ¹ |
-| Volume | No ² |
-| Seek | No ³ |
+| See current track title & artist | Yes (via MPRIS2 `Metadata`) |
+| Volume | No ¹ |
+| Seek | No ² |
 | Browse / search | No (use the `tidalt` TUI) |
 
-> ¹ tidalt currently returns a minimal `Metadata` map. Track title and artist
-> may not appear in the phone widget until `Metadata` is fully implemented.
+> ¹ Volume control via MPRIS2 `Volume` property is not yet implemented.
 >
-> ² Volume control via MPRIS2 `Volume` property is not yet implemented.
->
-> ³ MPRIS2 `Seek` / `SetPosition` are not implemented; use the TUI `←`/`→`
+> ² MPRIS2 `Seek` / `SetPosition` are not implemented; use the TUI `←`/`→`
 > keys instead.
