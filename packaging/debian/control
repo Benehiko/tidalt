@@ -9,7 +9,7 @@ Rules-Requires-Root: no
 
 Package: tidalt
 Architecture: amd64 arm64
-Depends: ${shlibs:Depends}, ${misc:Depends}, libasound2, dbus
+Depends: ${shlibs:Depends}, ${misc:Depends}, libasound2t64, dbus
 Recommends: playerctl
 Suggests: kdeconnect
 Description: Tidal music player for Linux — bit-perfect FLAC via ALSA
