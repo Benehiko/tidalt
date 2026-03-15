@@ -135,11 +135,13 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 
 ### Global shortcuts (MPRIS2)
 
-`tidalt` registers as an MPRIS2 media player so playback can be controlled without the TUI being focused — including from the daemon. These shortcuts work as long as tidalt (or `tidalt daemon`) is running, with no TUI open.
+> **Daemon mode required.** These shortcuts only work when `tidalt` is running as a background daemon (via `tidalt setup --daemon` / systemd). A plain `tidalt` TUI session does not register a persistent MPRIS2 service, so media keys and `playerctl` will have no effect when the TUI is closed.
+
+When the daemon is running, `tidalt` registers as an MPRIS2 media player so playback can be controlled from any MPRIS2 client — `playerctl`, KDE Connect, your desktop environment's media key handler — without a TUI open.
 
 #### Standard media keys
 
-Many keyboards and desktop environments map dedicated media keys directly to MPRIS2. These work automatically with no configuration:
+Many keyboards and desktop environments map dedicated media keys directly to MPRIS2:
 
 | Key        | Action         |
 | ---------- | -------------- |
