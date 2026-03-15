@@ -121,6 +121,11 @@ type Model struct {
 	// playlistRestored is true when a playlist was loaded from the bbolt cache
 	// on startup. Prevents favoritesLoadedMsg from overwriting the restored list.
 	playlistRestored bool
+
+	// restorePosition is the playback position (seconds) to seek to when the
+	// next track starts. Set from the persisted last position on startup,
+	// consumed once by nowPlayingMsg.
+	restorePosition float64
 }
 
 func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsStore, srv *mpris.Server, openURL string) Model {
@@ -298,6 +303,7 @@ func (m *Model) playTrackCmd(track tidal.Track) tea.Cmd {
 	m.currentTrack = &track
 	m.isPlaying = true
 	m.advancing = true // suppresses any stale trackDoneMsg until nowPlayingMsg resets it
+	m.restorePosition = 0
 	_ = m.store.SaveLastTrackID(track.ID)
 	return func() tea.Msg {
 		url, err := m.client.GetStreamURL(m.ctx, track.ID)
@@ -513,6 +519,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "ctrl+c", "q":
+			if m.currentTrack != nil {
+				_ = m.store.SaveLastPosition(m.currPos)
+			}
 			if m.player != nil {
 				m.player.Close()
 			}
@@ -756,6 +765,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case nowPlayingMsg:
 		m.advancing = false
 		m.pushState()
+		if m.restorePosition > 0 {
+			pos := m.restorePosition
+			m.restorePosition = 0
+			_ = m.player.Seek(pos)
+		}
 		return m, waitForTrackDone(msg.done)
 
 	case barTickMsg:
@@ -768,6 +782,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.isPlaying && !m.clientMode {
 			m.currPos, _ = m.player.GetPosition()
 			m.duration, _ = m.player.GetDuration()
+			_ = m.store.SaveLastPosition(m.currPos)
 			m.pushState()
 		}
 		if m.clientMode {
@@ -848,6 +863,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						break
 					}
 				}
+			}
+			if lastPos, err := m.store.LoadLastPosition(); err == nil && lastPos > 0 {
+				m.restorePosition = lastPos
+				m.currPos = lastPos
 			}
 		}
 

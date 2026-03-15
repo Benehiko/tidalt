@@ -253,6 +253,39 @@ func (s *SecretsStore) LoadVolume() (float64, error) {
 	return vol, err
 }
 
+func (s *SecretsStore) SaveLastPosition(seconds float64) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		return b.Put([]byte("lastPosition"), fmt.Appendf(nil, "%f", seconds))
+	})
+}
+
+func (s *SecretsStore) LoadLastPosition() (float64, error) {
+	if s.db == nil {
+		return 0, nil
+	}
+	var pos float64
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte("lastPosition"))
+		if v == nil {
+			return nil
+		}
+		_, err := fmt.Sscanf(string(v), "%f", &pos)
+		return err
+	})
+	return pos, err
+}
+
 func (s *SecretsStore) SaveLastTrackID(trackID int) error {
 	if s.db == nil {
 		return nil
