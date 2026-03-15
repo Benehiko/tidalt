@@ -116,6 +116,12 @@ type Model struct {
 	clientMode  bool
 	mprisClient *mpris.Client
 
+	// localPlaylist is true when the client has loaded a playlist locally
+	// (from a mix, radio, or URL) that has not yet been sent to the server.
+	// While true, parentStateMsg will not overwrite m.tracks so the user can
+	// browse the local list freely before committing it to the server.
+	localPlaylist bool
+
 	// mprisServer is non-nil in normal mode; used to push live state to clients.
 	mprisServer *mpris.Server
 
@@ -253,6 +259,12 @@ type (
 		key string
 		img image.Image
 	}
+	// playPlaylistMsg asks the server model to replace its queue and start
+	// playing from the given index. Produced by CmdPlayPlaylist handling.
+	playPlaylistMsg struct {
+		tracks     []tidal.Track
+		startIndex int
+	}
 )
 
 // applyShuffle reorders m.tracks according to the current shuffle mode and
@@ -314,6 +326,24 @@ func (m *Model) nextIndex() int {
 func (m *Model) playTrackCmd(track tidal.Track) tea.Cmd {
 	if m.clientMode {
 		mc := m.mprisClient
+		if m.localPlaylist && len(m.tracks) > 0 {
+			// Find the index of this track in the local playlist.
+			idx := 0
+			for i, t := range m.tracks {
+				if t.ID == track.ID {
+					idx = i
+					break
+				}
+			}
+			tracksJSON := mpris.MarshalTracks(m.tracks)
+			m.localPlaylist = false
+			return func() tea.Msg {
+				if err := mc.SendPlaylist(tracksJSON, idx); err != nil {
+					return errMsg(err)
+				}
+				return nil
+			}
+		}
 		trackID := track.ID
 		return func() tea.Msg {
 			if err := mc.SendTrackID(trackID); err != nil {
@@ -943,7 +973,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentTrack = nil
 		}
 		// Update playlist ("My Music") from parent if non-empty.
-		if ps.PlaylistJSON != "" && ps.PlaylistJSON != "null" {
+		// Skip when the user has loaded a local playlist they haven't sent yet.
+		if !m.localPlaylist && ps.PlaylistJSON != "" && ps.PlaylistJSON != "null" {
 			var tracks []tidal.Track
 			if err := json.Unmarshal([]byte(ps.PlaylistJSON), &tracks); err == nil && len(tracks) > 0 {
 				// Only replace the list when it actually changed to avoid
@@ -1048,6 +1079,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.searchInput.Blur()
 			m.cursor = 0
 		}
+		// In client mode, mark this as a local playlist so parentStateMsg
+		// doesn't overwrite it before the user commits it to the server.
+		if m.clientMode {
+			m.localPlaylist = true
+		}
 		_ = m.store.SavePlaylist(m.tracks)
 		m.pushState()
 
@@ -1082,6 +1118,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clearErrMsg:
 		m.errText = ""
+
+	case playPlaylistMsg:
+		m.tracksOrder = msg.tracks
+		m.shuffleMode = ShuffleOff
+		m.applyShuffle()
+		m.state = StateBrowse
+		m.searchInput.Blur()
+		idx := msg.startIndex
+		if idx < 0 || idx >= len(m.tracks) {
+			idx = 0
+		}
+		m.cursor = idx
+		_ = m.store.SavePlaylist(m.tracks)
+		track := m.tracks[idx]
+		_ = m.store.CacheTrack(track.ID, track)
+		return m, m.playTrackCmd(track)
 
 	case mprisMsg:
 		ev := mpris.Event(msg)
@@ -1141,6 +1193,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return errMsg(err)
 					}
 					return openURLTracksMsg(tracks)
+				},
+				listenMPRIS(m.mprisCh),
+			)
+		case mpris.CmdPlayPlaylist:
+			playlistJSON := ev.PlaylistJSON
+			startIdx := ev.PlaylistStartIndex
+			return m, tea.Batch(
+				func() tea.Msg {
+					var tracks []tidal.Track
+					if err := json.Unmarshal([]byte(playlistJSON), &tracks); err != nil || len(tracks) == 0 {
+						return errMsg(fmt.Errorf("invalid playlist from client: %w", err))
+					}
+					return playPlaylistMsg{tracks: tracks, startIndex: startIdx}
 				},
 				listenMPRIS(m.mprisCh),
 			)
@@ -1505,7 +1570,11 @@ func (m Model) View() string {
 				listLines = append(listLines, truncateStr(line, listW))
 			}
 		}
-		footer = "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [s] Shuffle | [r] Radio | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
+		if m.clientMode && m.localPlaylist {
+			footer = "\n [TAB] Switch Tab | [ENTER] Send playlist + Play | [r] Radio | [f] Favorite | [9/0] Vol | [q] Quit\n"
+		} else {
+			footer = "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [s] Shuffle | [r] Radio | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
+		}
 	}
 
 	// Build panel and join with list lines side-by-side.

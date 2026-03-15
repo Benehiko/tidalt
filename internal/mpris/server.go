@@ -33,16 +33,19 @@ const (
 	CmdPlayPause Cmd = iota
 	CmdNext
 	CmdPrevious
-	CmdOpenURL     // URL is in Event.URL
-	CmdPlayTrackID // TrackID is in Event.TrackID
+	CmdOpenURL      // URL is in Event.URL
+	CmdPlayTrackID  // TrackID is in Event.TrackID
+	CmdPlayPlaylist // PlaylistJSON and PlaylistStartIndex are in Event
 )
 
 // Event is sent on the Commands channel for every media key press or URL
 // forwarded from a second instance.
 type Event struct {
-	Cmd     Cmd
-	URL     string // non-empty only for CmdOpenURL
-	TrackID int    // non-zero only for CmdPlayTrackID
+	Cmd                Cmd
+	URL                string // non-empty only for CmdOpenURL
+	TrackID            int    // non-zero only for CmdPlayTrackID
+	PlaylistJSON       string // non-empty only for CmdPlayPlaylist
+	PlaylistStartIndex int    // for CmdPlayPlaylist: index of the first track to play
 }
 
 // PlayerState is the snapshot of playback state the parent broadcasts.
@@ -220,6 +223,12 @@ func (c *Client) SendTrackID(trackID int) error {
 	return c.obj.Call(appIface+".PlayTrackID", 0, trackID).Err
 }
 
+// SendPlaylist replaces the running instance's queue with the JSON-encoded
+// []tidal.Track and starts playback from startIndex.
+func (c *Client) SendPlaylist(tracksJSON string, startIndex int) error {
+	return c.obj.Call(appIface+".PlayPlaylist", 0, tracksJSON, startIndex).Err
+}
+
 // SendPlayPause toggles play/pause on the running instance.
 func (c *Client) SendPlayPause() error {
 	return c.obj.Call("org.mpris.MediaPlayer2.Player.PlayPause", 0).Err
@@ -336,6 +345,16 @@ func (a *tidalApp) OpenURL(url string) *dbus.Error {
 func (a *tidalApp) PlayTrackID(trackID int) *dbus.Error {
 	select {
 	case a.ch <- Event{Cmd: CmdPlayTrackID, TrackID: trackID}:
+	default:
+	}
+	return nil
+}
+
+// PlayPlaylist is called by a client instance to replace the parent's queue
+// with a JSON-encoded []tidal.Track and start playback from startIndex.
+func (a *tidalApp) PlayPlaylist(tracksJSON string, startIndex int) *dbus.Error {
+	select {
+	case a.ch <- Event{Cmd: CmdPlayPlaylist, PlaylistJSON: tracksJSON, PlaylistStartIndex: startIndex}:
 	default:
 	}
 	return nil
@@ -537,6 +556,10 @@ const introspectionXML = `<!DOCTYPE node PUBLIC
     </method>
     <method name="PlayTrackID">
       <arg name="trackID" type="i" direction="in"/>
+    </method>
+    <method name="PlayPlaylist">
+      <arg name="tracksJSON"  type="s" direction="in"/>
+      <arg name="startIndex"  type="i" direction="in"/>
     </method>
     <method name="GetState">
       <arg name="currentTrackJSON" type="s" direction="out"/>
