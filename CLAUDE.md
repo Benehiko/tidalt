@@ -22,12 +22,12 @@ Tidal API client.
 Bit-perfect FLAC playback via CGO + libasound.
 - Opens ALSA `hw:` devices directly, bypassing PipeWire/PulseAudio
 - Negotiates the best PCM format the DAC supports using `snd_pcm_hw_params` (no soft resampling)
-- Format preference for 16-bit sources: S16_LE → S24_3LE → S24_LE → S32_LE
+- Format preference for 16-bit sources: S32_LE → S16_LE → S24_3LE → S24_LE (S32_LE first because some DACs, e.g. CS43198-based Hidizs S9 Pro Plus, have a broken S16_LE USB endpoint)
 - Format preference for 24-bit sources: S24_3LE → S24_LE → S32_LE
 - Acquires `org.freedesktop.ReserveDevice1.Audio{N}` on D-Bus before opening the device, asking PipeWire to release if it holds the reservation
 - Decodes FLAC in-flight from the HTTP stream using `github.com/mewkiz/flac`
 - Volume, pause, and position tracking via atomics
-- Auto-detects known DACs (Hidizs S9 Pro, Focusrite Scarlett Solo) from `/proc/asound/cards`
+- Auto-detects known DACs (Hidizs S9 Pro, Hidizs S9 Pro Plus "Martha", Focusrite Scarlett Solo) from `/proc/asound/cards`
 
 ### `internal/store`
 Persistent storage.

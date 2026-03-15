@@ -11,6 +11,7 @@ typedef struct {
     snd_pcm_format_t  format;
     int               bytes_per_sample;
     int               significant_bits; // actual DAC bit depth (e.g. 24 for Scarlett, 32 for S9 Pro Plus)
+    unsigned int      rate;             // negotiated sample rate (may differ from requested)
     snd_pcm_uframes_t period_size;
     snd_pcm_uframes_t buffer_size;
     snd_pcm_uframes_t avail_min;
@@ -45,10 +46,14 @@ static int open_hw_pcm(const char *device,
 
     // Negotiate format — try preferred formats for the source bit depth.
     {
-        snd_pcm_format_t fmt16[] = {SND_PCM_FORMAT_S16_LE,
+        // Prefer S32_LE for 16-bit sources: many USB DACs (e.g. CS43198-based
+        // devices) have a buggy or non-functional S16_LE USB endpoint but work
+        // correctly via their native 32-bit endpoint.  The 16-bit samples are
+        // left-shifted to fill the MSB (standard MSB-aligned convention).
+        snd_pcm_format_t fmt16[] = {SND_PCM_FORMAT_S32_LE,
+                                    SND_PCM_FORMAT_S16_LE,
                                     SND_PCM_FORMAT_S24_3LE,
-                                    SND_PCM_FORMAT_S24_LE,
-                                    SND_PCM_FORMAT_S32_LE};
+                                    SND_PCM_FORMAT_S24_LE};
         snd_pcm_format_t fmt24[] = {SND_PCM_FORMAT_S24_3LE,
                                     SND_PCM_FORMAT_S24_LE,
                                     SND_PCM_FORMAT_S32_LE};
@@ -77,18 +82,20 @@ static int open_hw_pcm(const char *device,
 
     rc = snd_pcm_hw_params_set_rate_near(*handle_out, params, &rate, 0);
     if (rc < 0) goto fail;
+    result->rate = rate;
 
-    // Match ffmpeg: get max buffer size, set it, then set period to minimum.
+    // Set period size first so the DAC gets a sane interrupt rate (~23ms at
+    // 44100 Hz), then set the buffer to 4× the negotiated period.  Setting
+    // buffer first and then querying period_size_min can return absurdly small
+    // values on some USB DACs (e.g. 87 frames on the Hidizs S9 Pro Plus
+    // "Martha"), which causes ~1000 interrupts/s and severe distortion.
     {
-        snd_pcm_uframes_t buffer_size, period_size;
-        snd_pcm_hw_params_get_buffer_size_max(params, &buffer_size);
-        if (buffer_size > 88200) buffer_size = 88200; // ~2s at 44100Hz
-        rc = snd_pcm_hw_params_set_buffer_size_near(*handle_out, params, &buffer_size);
+        snd_pcm_uframes_t period_size = 1024;
+        rc = snd_pcm_hw_params_set_period_size_near(*handle_out, params, &period_size, NULL);
         if (rc < 0) goto fail;
 
-        snd_pcm_hw_params_get_period_size_min(params, &period_size, NULL);
-        if (period_size == 0) period_size = buffer_size / 4;
-        rc = snd_pcm_hw_params_set_period_size_near(*handle_out, params, &period_size, NULL);
+        snd_pcm_uframes_t buffer_size = period_size * 4;
+        rc = snd_pcm_hw_params_set_buffer_size_near(*handle_out, params, &buffer_size);
         if (rc < 0) goto fail;
     }
 
@@ -359,6 +366,7 @@ type alsaHandle struct {
 	format          C.snd_pcm_format_t
 	bytesPerSample  int
 	significantBits int // actual DAC bit depth
+	rate            uint32
 	periodSize      uint64
 	bufferSize      uint64
 	availMin        uint64
@@ -390,6 +398,7 @@ func openALSA(device string, channels uint8, rate uint32, bits uint8) (*alsaHand
 		format:          result.format,
 		bytesPerSample:  int(result.bytes_per_sample),
 		significantBits: int(result.significant_bits),
+		rate:            uint32(result.rate),
 		periodSize:      uint64(result.period_size),
 		bufferSize:      uint64(result.buffer_size),
 		availMin:        uint64(result.avail_min),
@@ -563,6 +572,8 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		"bps", ah.bytesPerSample,
 		"significantBits", ah.significantBits,
 		"srcBits", bits,
+		"rate_requested", sampleRate,
+		"rate_negotiated", ah.rate,
 		"period_size", ah.periodSize,
 		"buffer_size", ah.bufferSize,
 	)
@@ -574,10 +585,6 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 	}()
 
 	bps := ah.bytesPerSample
-	periodFrames := int(ah.periodSize)
-	if periodFrames == 0 {
-		periodFrames = 87
-	}
 
 	// streamLoop runs the decode→ALSA pipeline for the current HTTP stream.
 	// Returns (seekTarget, true) if a seek was requested, or (0, false) when
@@ -736,12 +743,8 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 				default:
 				}
 
-				chunk := periodFrames
-				if framesDone+chunk > pcm.nFrames {
-					chunk = pcm.nFrames - framesDone
-				}
 				off := framesDone * int(channels) * bps
-				written := C.snd_pcm_writei(ah.pcm, unsafe.Pointer(&pcm.data[off]), C.snd_pcm_uframes_t(chunk))
+				written := C.snd_pcm_writei(ah.pcm, unsafe.Pointer(&pcm.data[off]), C.snd_pcm_uframes_t(pcm.nFrames-framesDone))
 				if written < 0 {
 					errStr := C.GoString(C.snd_strerror(C.int(written)))
 					logger.L.Warn("snd_pcm_writei error, recovering", "err", errStr)

@@ -169,11 +169,12 @@ See [docs/media-keys.md](docs/media-keys.md) for full setup instructions.
 
 Auto-detection scans `/proc/asound/cards`. Any ALSA-visible device can be selected manually with the `d` key.
 
-| DAC                     |  Auto-detected   |
-| ----------------------- | :--------------: |
-| Hidizs S9 Pro           |       Yes        |
-| Focusrite Scarlett Solo |       Yes        |
-| Any ALSA-visible device | Manual (`d` key) |
+| DAC                          |  Auto-detected   |
+| ---------------------------- | :--------------: |
+| Hidizs S9 Pro                |       Yes        |
+| Hidizs S9 Pro Plus ("Martha") |       Yes        |
+| Focusrite Scarlett Solo      |       Yes        |
+| Any ALSA-visible device      | Manual (`d` key) |
 
 ---
 
