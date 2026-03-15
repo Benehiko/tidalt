@@ -1046,8 +1046,8 @@ const (
 	numBars    = 9
 	numRows    = 5
 	barScale   = 10                            // fixed-point scale for smooth motion
-	barMax     = int(numRows * 0.6 * barScale) // 60% height ceiling, scaled
-	barMin     = 1 * barScale                  // minimum height, scaled
+	barMax     = int(numRows * 0.8 * barScale) // 80% height ceiling, scaled
+	barMin     = 1                             // near-zero minimum, scaled
 	barStep    = 2                             // smoothing step per tick (scaled units)
 	retargetIn = 4                             // re-randomise target every N ticks
 )
