@@ -33,8 +33,43 @@ sudo dpkg -i tidalt_*.deb
 sudo apt-get install -f
 ```
 
+### Fedora
+
+```bash
+sudo dnf install tidalt-*.rpm
+```
+
+### Build packages locally with Docker
+
+All packages (Arch, Debian, Fedora — amd64 and arm64) can be built locally
+with a single command using Docker Buildx bake:
+
+```bash
+# One-time: create a multi-platform builder
+docker buildx create --use
+
+# Build all packages (replace VERSION as needed)
+docker buildx bake \
+  --file docker-bake.hcl \
+  --set "*.args.VERSION=3.0.0" \
+  --set "*.output=type=local,dest=dist"
+```
+
+Artifacts land in `dist/`:
+
+```
+dist/
+  tidalt-3.0.0-1-x86_64.pkg.tar.zst   # Arch
+  tidalt_3.0.0-1_amd64.deb            # Debian / Ubuntu (amd64)
+  tidalt_3.0.0-1_arm64.deb            # Debian / Ubuntu (arm64)
+  tidalt-3.0.0-1.fc43.x86_64.rpm      # Fedora (amd64)
+  tidalt-3.0.0-1.fc43.aarch64.rpm     # Fedora (arm64)
+```
+
+To build a single target: append `debian`, `arch`, or `fedora` to the command.
+
 See [docs/installation.md](docs/installation.md) for building packages locally
-or installing from source.
+without Docker or installing from source.
 
 ### Post-install
 

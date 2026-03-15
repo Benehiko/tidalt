@@ -29,6 +29,14 @@ sudo dpkg -i tidalt_*.deb
 sudo apt-get install -f   # resolve any missing dependencies
 ```
 
+### Fedora
+
+Download the `.rpm` from the latest release:
+
+```bash
+sudo dnf install tidalt-*.rpm
+```
+
 ---
 
 ## From source
@@ -110,6 +118,17 @@ Then open the TUI from any terminal with `tidalt`, or control playback with
 The `packaging/` directory at the root of the repository contains ready-to-use
 build recipes for Arch and Debian.
 
+### All distros — docker bake
+
+The easiest way to build all packages at once (requires Docker with buildx):
+
+```bash
+docker buildx create --use
+docker buildx bake --file docker-bake.hcl --set "*.args.VERSION=3.0.0" --set "*.output=type=local,dest=dist"
+```
+
+Artifacts are written to `dist/`.
+
 ### Arch — makepkg
 
 ```bash
@@ -143,7 +162,7 @@ curl -L "https://github.com/Benehiko/tidalt/archive/refs/tags/v${VERSION}.tar.gz
     | tar xz
 cd "tidalt-${VERSION}"
 
-# Compile the binary first — the debian/rules file installs it directly.
+# Compile the binary first — debian/rules installs it directly, no Go needed at package time.
 CGO_ENABLED=1 go build -trimpath -buildmode=pie \
     -ldflags "-s -w -linkmode=external" \
     -o tidalt-linux-amd64 ./cmd/tidalt
@@ -151,4 +170,34 @@ CGO_ENABLED=1 go build -trimpath -buildmode=pie \
 cp -r /path/to/repo/packaging/debian debian
 dpkg-buildpackage -us -uc -b
 sudo dpkg -i ../tidalt_${VERSION}-1_amd64.deb
+```
+
+> `libasound2-dev` is only needed for the `go build` step above. The
+> `dpkg-buildpackage` step itself has no native build dependencies.
+
+### Fedora — rpmbuild
+
+```bash
+sudo dnf install rpm-build alsa-lib-devel
+```
+
+Go 1.26+ is required. Install from [go.dev/dl](https://go.dev/dl/).
+
+```bash
+VERSION=3.0.0
+curl -L "https://github.com/Benehiko/tidalt/archive/refs/tags/v${VERSION}.tar.gz" \
+    | tar xz
+cd "tidalt-${VERSION}"
+
+CGO_ENABLED=1 go build -trimpath -buildmode=pie \
+    -ldflags "-s -w -linkmode=external" \
+    -o tidalt ./cmd/tidalt
+
+mkdir -p ~/rpmbuild/SOURCES
+cp tidalt ~/rpmbuild/SOURCES/
+cp cmd/tidalt/tidalt.desktop ~/rpmbuild/SOURCES/
+cp /path/to/repo/packaging/fedora/tidalt.spec ~/rpmbuild/SPECS/
+
+rpmbuild -bb --define "version_macro ${VERSION}" ~/rpmbuild/SPECS/tidalt.spec
+sudo dnf install ~/rpmbuild/RPMS/x86_64/tidalt-${VERSION}-1.*.x86_64.rpm
 ```

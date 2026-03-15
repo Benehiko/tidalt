@@ -1,15 +1,13 @@
 #!/usr/bin/make -f
 # SPDX-License-Identifier: Apache-2.0
 #
-# The binary is pre-built by the CI pipeline (or by the caller) and placed at
-# tidalt-linux-<arch> before dpkg-buildpackage is invoked. This rules file
-# only installs artefacts — it does not invoke go build.
+# The binary is pre-built before dpkg-buildpackage is invoked and placed at
+# tidalt-linux-<arch>. This rules file only installs artefacts.
 
 export DH_VERBOSE = 1
 
 DEB_HOST_ARCH ?= $(shell dpkg-architecture -qDEB_HOST_ARCH)
 
-# Map Debian arch names to the filenames produced by the Go build step.
 ifeq ($(DEB_HOST_ARCH),amd64)
   PREBUILT_BINARY := tidalt-linux-amd64
 else ifeq ($(DEB_HOST_ARCH),arm64)
@@ -18,17 +16,17 @@ else
   $(error Unsupported architecture: $(DEB_HOST_ARCH))
 endif
 
+DESTDIR := debian/tidalt
+
 %:
 	dh $@
 
+override_dh_auto_configure:
 override_dh_auto_build:
-	# Nothing to build — binary was compiled before dpkg-buildpackage was called.
-
 override_dh_auto_test:
-	# Tests are run in the separate CI test job, not during packaging.
 
 override_dh_auto_install:
 	install -Dm755 $(PREBUILT_BINARY) \
-		debian/tidalt/usr/bin/tidalt
+		$(DESTDIR)/usr/bin/tidalt
 	install -Dm644 cmd/tidalt/tidalt.desktop \
-		debian/tidalt/usr/share/applications/tidalt.desktop
+		$(DESTDIR)/usr/share/applications/tidalt.desktop
