@@ -1,0 +1,428 @@
+package tidal
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/mdp/qrterminal/v3"
+	"golang.org/x/term"
+)
+
+// bigDigits maps each character to a 7-row tall block-art representation
+// (7 chars wide). Characters are designed to be unambiguous:
+//   - '0' has a centre slash to distinguish it from 'O'
+//   - 'Q' has a tail extending below-right to distinguish it from 'O'
+//   - 'B' has two distinct bump sizes (smaller top, larger bottom)
+//   - '8' has a narrow waist
+//   - 'I' has serifs to distinguish it from '1'
+var bigDigits = map[rune][7]string{
+	'0': {
+		" █████ ",
+		"██   ██",
+		"██  ███",
+		"██ █ ██",
+		"███  ██",
+		"██   ██",
+		" █████ ",
+	},
+	'1': {
+		"   ██  ",
+		" ████  ",
+		"   ██  ",
+		"   ██  ",
+		"   ██  ",
+		"   ██  ",
+		" ██████",
+	},
+	'2': {
+		" █████ ",
+		"██   ██",
+		"     ██",
+		"  ████ ",
+		" ██    ",
+		"██     ",
+		"███████",
+	},
+	'3': {
+		" █████ ",
+		"██   ██",
+		"     ██",
+		"  ████ ",
+		"     ██",
+		"██   ██",
+		" █████ ",
+	},
+	'4': {
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		"███████",
+		"     ██",
+		"     ██",
+		"     ██",
+	},
+	'5': {
+		"███████",
+		"██     ",
+		"██     ",
+		"██████ ",
+		"     ██",
+		"██   ██",
+		" █████ ",
+	},
+	'6': {
+		" █████ ",
+		"██   ██",
+		"██     ",
+		"██████ ",
+		"██   ██",
+		"██   ██",
+		" █████ ",
+	},
+	'7': {
+		"███████",
+		"     ██",
+		"    ██ ",
+		"   ██  ",
+		"  ██   ",
+		"  ██   ",
+		"  ██   ",
+	},
+	'8': {
+		" █████ ",
+		"██   ██",
+		"██   ██",
+		" █████ ",
+		"██   ██",
+		"██   ██",
+		" █████ ",
+	},
+	'9': {
+		" █████ ",
+		"██   ██",
+		"██   ██",
+		" ██████",
+		"     ██",
+		"██   ██",
+		" █████ ",
+	},
+	'A': {
+		"  ███  ",
+		" ██ ██ ",
+		"██   ██",
+		"██   ██",
+		"███████",
+		"██   ██",
+		"██   ██",
+	},
+	'B': {
+		"██████ ",
+		"██   ██",
+		"██   ██",
+		"██████ ",
+		"██   ██",
+		"██   ██",
+		"██████ ",
+	},
+	'C': {
+		" █████ ",
+		"██   ██",
+		"██     ",
+		"██     ",
+		"██     ",
+		"██   ██",
+		" █████ ",
+	},
+	'D': {
+		"█████  ",
+		"██   █ ",
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		"██   █ ",
+		"█████  ",
+	},
+	'E': {
+		"███████",
+		"██     ",
+		"██     ",
+		"█████  ",
+		"██     ",
+		"██     ",
+		"███████",
+	},
+	'F': {
+		"███████",
+		"██     ",
+		"██     ",
+		"█████  ",
+		"██     ",
+		"██     ",
+		"██     ",
+	},
+	'G': {
+		" █████ ",
+		"██   ██",
+		"██     ",
+		"██  ███",
+		"██   ██",
+		"██   ██",
+		" █████ ",
+	},
+	'H': {
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		"███████",
+		"██   ██",
+		"██   ██",
+		"██   ██",
+	},
+	'I': {
+		"███████",
+		"  ███  ",
+		"  ███  ",
+		"  ███  ",
+		"  ███  ",
+		"  ███  ",
+		"███████",
+	},
+	'J': {
+		"███████",
+		"    ██ ",
+		"    ██ ",
+		"    ██ ",
+		"██  ██ ",
+		"██  ██ ",
+		" ████  ",
+	},
+	'K': {
+		"██   ██",
+		"██  ██ ",
+		"██ ██  ",
+		"████   ",
+		"██ ██  ",
+		"██  ██ ",
+		"██   ██",
+	},
+	'L': {
+		"██     ",
+		"██     ",
+		"██     ",
+		"██     ",
+		"██     ",
+		"██     ",
+		"███████",
+	},
+	'M': {
+		"██   ██",
+		"███ ███",
+		"███████",
+		"██ █ ██",
+		"██   ██",
+		"██   ██",
+		"██   ██",
+	},
+	'N': {
+		"██   ██",
+		"███  ██",
+		"████ ██",
+		"██████ ",
+		"██ ████",
+		"██  ███",
+		"██   ██",
+	},
+	'O': {
+		" █████ ",
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		" █████ ",
+	},
+	'P': {
+		"██████ ",
+		"██   ██",
+		"██   ██",
+		"██████ ",
+		"██     ",
+		"██     ",
+		"██     ",
+	},
+	'Q': {
+		" █████ ",
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		"██ ████",
+		"██  ███",
+		" ███ ██",
+	},
+	'R': {
+		"██████ ",
+		"██   ██",
+		"██   ██",
+		"██████ ",
+		"██ ██  ",
+		"██  ██ ",
+		"██   ██",
+	},
+	'S': {
+		" █████ ",
+		"██   ██",
+		"██     ",
+		" █████ ",
+		"     ██",
+		"██   ██",
+		" █████ ",
+	},
+	'T': {
+		"███████",
+		"  ███  ",
+		"  ███  ",
+		"  ███  ",
+		"  ███  ",
+		"  ███  ",
+		"  ███  ",
+	},
+	'U': {
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		" █████ ",
+	},
+	'V': {
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		" ██ ██ ",
+		"  ███  ",
+		"   █   ",
+	},
+	'W': {
+		"██   ██",
+		"██   ██",
+		"██   ██",
+		"██ █ ██",
+		"███████",
+		"███ ███",
+		"██   ██",
+	},
+	'X': {
+		"██   ██",
+		" ██ ██ ",
+		"  ███  ",
+		"   █   ",
+		"  ███  ",
+		" ██ ██ ",
+		"██   ██",
+	},
+	'Y': {
+		"██   ██",
+		" ██ ██ ",
+		"  ███  ",
+		"   █   ",
+		"   █   ",
+		"   █   ",
+		"   █   ",
+	},
+	'Z': {
+		"███████",
+		"    ██ ",
+		"   ██  ",
+		"  ██   ",
+		" ██    ",
+		"██     ",
+		"███████",
+	},
+	'-': {
+		"       ",
+		"       ",
+		"       ",
+		"███████",
+		"       ",
+		"       ",
+		"       ",
+	},
+	' ': {
+		"       ",
+		"       ",
+		"       ",
+		"       ",
+		"       ",
+		"       ",
+		"       ",
+	},
+}
+
+// bigText renders s as 7-row tall block art, returning the rows as a slice.
+func bigText(s string) []string {
+	rows := make([]string, 7)
+	for i, ch := range strings.ToUpper(s) {
+		glyph, ok := bigDigits[ch]
+		if !ok {
+			glyph = bigDigits[' ']
+		}
+		for r := range 7 {
+			if i > 0 {
+				rows[r] += "  "
+			}
+			rows[r] += glyph[r]
+		}
+	}
+	return rows
+}
+
+// printLoginPrompt prints a size-capped QR code and big-font user code.
+func printLoginPrompt(verifyURL, userCode string) {
+	termW, termH, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || termW <= 0 {
+		termW = 80
+	}
+	if termH <= 0 {
+		termH = 24
+	}
+
+	// Render QR into a buffer first so we can measure it.
+	var buf bytes.Buffer
+	qrterminal.GenerateWithConfig(verifyURL, qrterminal.Config{
+		Level:      qrterminal.M,
+		Writer:     &buf,
+		HalfBlocks: true,
+		QuietZone:  1,
+	})
+
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	qrH := len(lines)
+	qrW := 0
+	for _, l := range lines {
+		if len([]rune(l)) > qrW {
+			qrW = len([]rune(l))
+		}
+	}
+
+	maxW := termW / 2
+	maxH := termH / 2
+
+	fmt.Println()
+	if qrW <= maxW && qrH <= maxH {
+		fmt.Println(buf.String())
+	} else {
+		fmt.Println("  (QR code too large for terminal — use the link below)")
+		fmt.Println()
+	}
+
+	fmt.Println("  Your code:")
+	for _, row := range bigText(userCode) {
+		fmt.Printf("  \033[1;36m%s\033[0m\n", row)
+	}
+
+	fmt.Printf("\n  %s\n\n", verifyURL)
+}

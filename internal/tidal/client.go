@@ -82,9 +82,8 @@ func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) 
 
 	verifyURL := "https://" + da.VerificationURI + "?user_code=" + url.QueryEscape(da.UserCode)
 
-	fmt.Printf("\n1. Go to: %s\n", verifyURL)
-	fmt.Printf("2. Enter Code: %s\n\n", da.UserCode)
-	fmt.Println("Opening browser... or visit the link above to log in.")
+	fmt.Println("Scan the QR code or open the link below to log in:")
+	printLoginPrompt(verifyURL, da.UserCode)
 
 	_ = browser.OpenURL(verifyURL)
 
@@ -166,8 +165,6 @@ func (c *Client) TokenSource(ctx context.Context) oauth2.TokenSource {
 func (c *Client) RevokeToken(ctx context.Context, token string) error {
 	data := url.Values{}
 	data.Set("token", token)
-	data.Set("client_id", ClientID)
-	data.Set("client_secret", ClientSecret)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, AuthURL+"/revoke",
 		strings.NewReader(data.Encode()))
@@ -175,6 +172,7 @@ func (c *Client) RevokeToken(ctx context.Context, token string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(ClientID, ClientSecret)
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	resp, err := httpClient.Do(req)

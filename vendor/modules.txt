@@ -46,7 +46,6 @@ github.com/charmbracelet/lipgloss
 # github.com/charmbracelet/x/ansi v0.11.6
 ## explicit; go 1.24.2
 github.com/charmbracelet/x/ansi
-github.com/charmbracelet/x/ansi/kitty
 github.com/charmbracelet/x/ansi/parser
 # github.com/charmbracelet/x/cellbuf v0.0.15
 ## explicit; go 1.24.2
@@ -100,6 +99,9 @@ github.com/mattn/go-localereader
 # github.com/mattn/go-runewidth v0.0.19
 ## explicit; go 1.20
 github.com/mattn/go-runewidth
+# github.com/mdp/qrterminal/v3 v3.2.1
+## explicit; go 1.20
+github.com/mdp/qrterminal/v3
 # github.com/mewkiz/flac v1.0.13
 ## explicit; go 1.23.2
 github.com/mewkiz/flac
@@ -165,8 +167,12 @@ golang.org/x/oauth2/internal
 # golang.org/x/sys v0.40.0
 ## explicit; go 1.24.0
 golang.org/x/sys/cpu
+golang.org/x/sys/plan9
 golang.org/x/sys/unix
 golang.org/x/sys/windows
+# golang.org/x/term v0.39.0
+## explicit; go 1.24.0
+golang.org/x/term
 # golang.org/x/text v0.35.0
 ## explicit; go 1.25.0
 golang.org/x/text/encoding
@@ -176,3 +182,8 @@ golang.org/x/text/encoding/unicode
 golang.org/x/text/internal/utf8internal
 golang.org/x/text/runes
 golang.org/x/text/transform
+# rsc.io/qr v0.2.0
+## explicit
+rsc.io/qr
+rsc.io/qr/coding
+rsc.io/qr/gf256
