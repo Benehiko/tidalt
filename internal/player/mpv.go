@@ -145,7 +145,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/Benehiko/tidalt/internal/logger"
+	"github.com/Benehiko/tidalt/v3/internal/logger"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/mewkiz/flac"

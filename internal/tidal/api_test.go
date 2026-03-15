@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/Benehiko/tidalt/internal/tidal"
+	"github.com/Benehiko/tidalt/v3/internal/tidal"
 )
 
 // roundTripFunc is a convenience type that lets a plain function satisfy

@@ -23,7 +23,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
-	"github.com/Benehiko/tidalt/internal/tidal"
+	"github.com/Benehiko/tidalt/v3/internal/tidal"
 )
 
 // Cmd identifies which media control event occurred.

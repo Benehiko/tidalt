@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/Benehiko/tidalt/internal/store"
-	"github.com/Benehiko/tidalt/internal/tidal"
+	"github.com/Benehiko/tidalt/v3/internal/store"
+	"github.com/Benehiko/tidalt/v3/internal/tidal"
 )
 
 func runLogout() {
