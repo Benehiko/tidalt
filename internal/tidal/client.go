@@ -80,11 +80,13 @@ func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) 
 		return nil, err
 	}
 
-	fmt.Printf("\n1. Go to: https://%s\n", da.VerificationURI)
-	fmt.Printf("2. Enter Code: %s\n\n", da.UserCode)
-	fmt.Println("Press ENTER to open the link in your browser, or wait for authorization...")
+	verifyURL := "https://" + da.VerificationURI + "?user_code=" + url.QueryEscape(da.UserCode)
 
-	_ = browser.OpenURL("https://" + da.VerificationURI)
+	fmt.Printf("\n1. Go to: %s\n", verifyURL)
+	fmt.Printf("2. Enter Code: %s\n\n", da.UserCode)
+	fmt.Println("Opening browser... or visit the link above to log in.")
+
+	_ = browser.OpenURL(verifyURL)
 
 	// 2. Poll for Token
 	standardDA := &oauth2.DeviceAuthResponse{
