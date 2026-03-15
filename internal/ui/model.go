@@ -606,6 +606,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.playTrackCmd(track)
 			}
 
+		case "left":
+			if !m.clientMode && m.player != nil && m.currentTrack != nil {
+				if err := m.player.Seek(m.currPos - 10); err != nil {
+					m.errText = err.Error()
+				}
+			}
+		case "right":
+			if !m.clientMode && m.player != nil && m.currentTrack != nil {
+				if err := m.player.Seek(m.currPos + 10); err != nil {
+					m.errText = err.Error()
+				}
+			}
+
 		case "up", "k":
 			if m.state == StateSearch {
 				if m.searchCursor > 0 {
@@ -1301,7 +1314,7 @@ func (m Model) View() string {
 				s += line + "\n"
 			}
 		}
-		s += "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [s] Shuffle | [r] Radio | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
+		s += "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [s] Shuffle | [r] Radio | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
 	}
 
 	return s

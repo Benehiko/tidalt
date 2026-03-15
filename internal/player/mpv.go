@@ -219,6 +219,11 @@ type Player struct {
 	cancel         context.CancelFunc
 	doneCh         chan struct{}
 	deviceOverride string // set via SetDevice; empty = auto-detect
+	currentURL     string // stored so Seek can signal the playback loop
+
+	// seekCh carries seek targets (in samples) to the running playback loop.
+	// Buffered 1 so Seek never blocks; the loop drains it before checking again.
+	seekCh chan uint64
 
 	// Track info — written by playbackLoop, read by UI tick
 	muInfo        sync.RWMutex
@@ -253,7 +258,9 @@ func (p *Player) getDevice() (string, error) {
 }
 
 func NewPlayer() *Player {
-	p := &Player{}
+	p := &Player{
+		seekCh: make(chan uint64, 1),
+	}
 	atomic.StoreUint64(&p.volumeBits, math.Float64bits(1.0))
 	return p
 }
@@ -421,10 +428,16 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 	p.mu.Lock()
 	p.cancel = cancel
 	p.doneCh = doneCh
+	p.currentURL = url
 	p.mu.Unlock()
 
 	atomic.StoreUint64(&p.samplesPlayed, 0)
 	atomic.StoreUint32(&p.paused, 0)
+	// Drain any pending seek so the new track starts from the beginning.
+	select {
+	case <-p.seekCh:
+	default:
+	}
 
 	go func() {
 		defer close(doneCh)
@@ -453,16 +466,31 @@ func (p *Player) stop() {
 	}
 }
 
-func (p *Player) playbackLoop(ctx context.Context, url, device string) {
-	logger.L.Debug("playbackLoop start", "url", url)
+// openStream fetches the FLAC HTTP stream and returns the response and decoder.
+// The caller is responsible for closing resp.Body.
+func openStream(ctx context.Context, url string) (*http.Response, *flac.Stream, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		logger.L.Error("failed to create HTTP request", "err", err)
-		return
+		return nil, nil, err
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		logger.L.Error("HTTP request failed", "err", err)
+		return nil, nil, err
+	}
+	stream, err := flac.New(resp.Body)
+	if err != nil {
+		_ = resp.Body.Close()
+		return nil, nil, err
+	}
+	return resp, stream, nil
+}
+
+func (p *Player) playbackLoop(ctx context.Context, url, device string) {
+	logger.L.Debug("playbackLoop start", "url", url)
+
+	resp, stream, err := openStream(ctx, url)
+	if err != nil {
+		logger.L.Error("failed to open stream", "err", err)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -471,15 +499,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 		"status", resp.StatusCode,
 		"content-type", resp.Header.Get("Content-Type"),
 		"content-length", resp.Header.Get("Content-Length"),
-		"content-encoding", resp.Header.Get("Content-Encoding"),
-		"transfer-encoding", resp.Header.Get("Transfer-Encoding"),
 	)
-
-	stream, err := flac.New(resp.Body)
-	if err != nil {
-		logger.L.Error("FLAC decode init failed", "err", err)
-		return
-	}
 
 	info := stream.Info
 	sampleRate := info.SampleRate
@@ -491,7 +511,6 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 		"channels", channels,
 		"bits", bits,
 		"samples", info.NSamples,
-		"content-type", resp.Header.Get("Content-Type"),
 	)
 
 	p.muInfo.Lock()
@@ -512,12 +531,8 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 		"bps", ah.bytesPerSample,
 		"significantBits", ah.significantBits,
 		"srcBits", bits,
-		"shift", ah.significantBits-int(bits),
 		"period_size", ah.periodSize,
 		"buffer_size", ah.bufferSize,
-		"avail_min", ah.availMin,
-		"start_threshold", ah.startThreshold,
-		"stop_threshold", ah.stopThreshold,
 	)
 	defer func() {
 		C.snd_pcm_drain(ah.pcm)
@@ -525,129 +540,180 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string) {
 	}()
 
 	bps := ah.bytesPerSample
-
-	// Decode FLAC frames on a separate goroutine so network I/O stalls don't
-	// block the ALSA write loop. The channel holds pre-encoded PCM buffers.
-	type pcmBuf struct {
-		data    []byte
-		nFrames int
-	}
-	pcmCh := make(chan pcmBuf, 2)
-
-	go func() {
-		defer close(pcmCh)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			frame, ferr := stream.ParseNext()
-			if ferr != nil {
-				logger.L.Debug("FLAC decode done", "err", ferr)
-				return
-			}
-
-			n := int(frame.BlockSize)
-			buf := make([]byte, n*int(channels)*bps)
-			vol := math.Float64frombits(atomic.LoadUint64(&p.volumeBits))
-
-			for i := 0; i < n; i++ {
-				for ch := 0; ch < int(channels); ch++ {
-					s := frame.Subframes[ch].Samples[i]
-					if vol != 1.0 {
-						s = int32(float64(s) * vol)
-					}
-					off := (i*int(channels) + ch) * bps
-					switch ah.format {
-					case C.SND_PCM_FORMAT_S16_LE:
-						binary.LittleEndian.PutUint16(buf[off:], uint16(int16(s)))
-					case C.SND_PCM_FORMAT_S24_3LE:
-						buf[off] = byte(s)
-						buf[off+1] = byte(s >> 8)
-						buf[off+2] = byte(s >> 16)
-					case C.SND_PCM_FORMAT_S24_LE:
-						shift := uint(ah.significantBits - int(bits))
-						binary.LittleEndian.PutUint32(buf[off:], uint32(int32(s)<<shift))
-					case C.SND_PCM_FORMAT_S32_LE:
-						shift := uint(ah.significantBits - int(bits))
-						binary.LittleEndian.PutUint32(buf[off:], uint32(int32(s)<<shift))
-					}
-				}
-			}
-
-			select {
-			case pcmCh <- pcmBuf{data: buf, nFrames: n}:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
 	periodFrames := int(ah.periodSize)
 	if periodFrames == 0 {
 		periodFrames = 87
 	}
 
-	for pcm := range pcmCh {
-		framesDone := 0
-		for framesDone < pcm.nFrames {
-			// Check pause between every period-sized chunk (~2ms).
-			if atomic.LoadUint32(&p.paused) == 1 {
-				// Drop the ALSA buffer immediately so audio stops now,
-				// then drain the pre-decoded channel so we don't play
-				// stale buffered audio on resume.
-				C.snd_pcm_drop(ah.pcm)
-			drainPCMCh:
-				for {
-					select {
-					case _, ok := <-pcmCh:
-						if !ok {
-							return
-						}
-					default:
-						break drainPCMCh
-					}
-				}
-				for atomic.LoadUint32(&p.paused) == 1 {
-					select {
-					case <-ctx.Done():
-						return
-					case <-time.After(20 * time.Millisecond):
-					}
-				}
-				// Resume: re-prepare the PCM and restart from next frame.
-				C.snd_pcm_prepare(ah.pcm)
-				break
-			}
-			select {
-			case <-ctx.Done():
-				C.snd_pcm_drop(ah.pcm)
-				return
-			default:
-			}
+	// streamLoop runs the decode→ALSA pipeline for the current HTTP stream.
+	// Returns (seekTarget, true) if a seek was requested, or (0, false) when
+	// the stream ends naturally or the context is cancelled.
+	type pcmBuf struct {
+		data    []byte
+		nFrames int
+	}
 
-			chunk := periodFrames
-			if framesDone+chunk > pcm.nFrames {
-				chunk = pcm.nFrames - framesDone
-			}
-			off := framesDone * int(channels) * bps
-			written := C.snd_pcm_writei(ah.pcm, unsafe.Pointer(&pcm.data[off]), C.snd_pcm_uframes_t(chunk))
-			if written < 0 {
-				errStr := C.GoString(C.snd_strerror(C.int(written)))
-				logger.L.Warn("snd_pcm_writei error, recovering", "err", errStr)
-				if rc := C.snd_pcm_recover(ah.pcm, C.int(written), C.int(1)); rc < 0 {
-					logger.L.Error("snd_pcm_recover failed, stopping playback",
-						"err", C.GoString(C.snd_strerror(rc)))
+	streamLoop := func(skipSamples uint64) (seekTarget uint64, doSeek bool) {
+		stopDecode := make(chan struct{})
+		pcmCh := make(chan pcmBuf, 2)
+
+		go func() {
+			defer close(pcmCh)
+			var skipped uint64
+			for skipped < skipSamples {
+				select {
+				case <-ctx.Done():
+					return
+				case <-stopDecode:
+					return
+				default:
+				}
+				frame, ferr := stream.ParseNext()
+				if ferr != nil {
 					return
 				}
-				continue
+				skipped += uint64(frame.BlockSize)
 			}
-			framesDone += int(written)
+			atomic.StoreUint64(&p.samplesPlayed, skipped)
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-stopDecode:
+					return
+				default:
+				}
+				frame, ferr := stream.ParseNext()
+				if ferr != nil {
+					logger.L.Debug("FLAC decode done", "err", ferr)
+					return
+				}
+				n := int(frame.BlockSize)
+				buf := make([]byte, n*int(channels)*bps)
+				vol := math.Float64frombits(atomic.LoadUint64(&p.volumeBits))
+				for i := 0; i < n; i++ {
+					for ch := 0; ch < int(channels); ch++ {
+						s := frame.Subframes[ch].Samples[i]
+						if vol != 1.0 {
+							s = int32(float64(s) * vol)
+						}
+						off := (i*int(channels) + ch) * bps
+						switch ah.format {
+						case C.SND_PCM_FORMAT_S16_LE:
+							binary.LittleEndian.PutUint16(buf[off:], uint16(int16(s)))
+						case C.SND_PCM_FORMAT_S24_3LE:
+							buf[off] = byte(s)
+							buf[off+1] = byte(s >> 8)
+							buf[off+2] = byte(s >> 16)
+						case C.SND_PCM_FORMAT_S24_LE:
+							shift := uint(ah.significantBits - int(bits))
+							binary.LittleEndian.PutUint32(buf[off:], uint32(int32(s)<<shift))
+						case C.SND_PCM_FORMAT_S32_LE:
+							shift := uint(ah.significantBits - int(bits))
+							binary.LittleEndian.PutUint32(buf[off:], uint32(int32(s)<<shift))
+						}
+					}
+				}
+				select {
+				case pcmCh <- pcmBuf{data: buf, nFrames: n}:
+				case <-ctx.Done():
+					return
+				case <-stopDecode:
+					return
+				}
+			}
+		}()
+
+		returnSeek := func(target uint64) (uint64, bool) {
+			close(stopDecode)
+			// Drain so the decode goroutine can unblock and exit.
+			for range pcmCh {
+			}
+			C.snd_pcm_drop(ah.pcm)
+			C.snd_pcm_prepare(ah.pcm)
+			return target, true
 		}
 
-		atomic.AddUint64(&p.samplesPlayed, uint64(pcm.nFrames))
+		for pcm := range pcmCh {
+			framesDone := 0
+			for framesDone < pcm.nFrames {
+				// Check for a seek request.
+				select {
+				case target := <-p.seekCh:
+					return returnSeek(target)
+				default:
+				}
+
+				// Check pause.
+				if atomic.LoadUint32(&p.paused) == 1 {
+					C.snd_pcm_drop(ah.pcm)
+					for atomic.LoadUint32(&p.paused) == 1 {
+						select {
+						case target := <-p.seekCh:
+							return returnSeek(target)
+						case <-ctx.Done():
+							close(stopDecode)
+							for range pcmCh {
+							}
+							return 0, false
+						case <-time.After(20 * time.Millisecond):
+						}
+					}
+					C.snd_pcm_prepare(ah.pcm)
+					break
+				}
+
+				select {
+				case <-ctx.Done():
+					C.snd_pcm_drop(ah.pcm)
+					close(stopDecode)
+					for range pcmCh {
+					}
+					return 0, false
+				default:
+				}
+
+				chunk := periodFrames
+				if framesDone+chunk > pcm.nFrames {
+					chunk = pcm.nFrames - framesDone
+				}
+				off := framesDone * int(channels) * bps
+				written := C.snd_pcm_writei(ah.pcm, unsafe.Pointer(&pcm.data[off]), C.snd_pcm_uframes_t(chunk))
+				if written < 0 {
+					errStr := C.GoString(C.snd_strerror(C.int(written)))
+					logger.L.Warn("snd_pcm_writei error, recovering", "err", errStr)
+					if rc := C.snd_pcm_recover(ah.pcm, C.int(written), C.int(1)); rc < 0 {
+						logger.L.Error("snd_pcm_recover failed, stopping playback",
+							"err", C.GoString(C.snd_strerror(rc)))
+						close(stopDecode)
+						for range pcmCh {
+						}
+						return 0, false
+					}
+					continue
+				}
+				framesDone += int(written)
+			}
+			atomic.AddUint64(&p.samplesPlayed, uint64(pcm.nFrames))
+		}
+		return 0, false
+	}
+
+	seekTarget, doSeek := streamLoop(0)
+	for doSeek {
+		// Re-open the HTTP stream and skip to the seek target.
+		// samplesPlayed is NOT reset here — streamLoop sets it after skipping,
+		// so GetPosition() never briefly returns 0 between seeks.
+		_ = resp.Body.Close()
+
+		resp, stream, err = openStream(ctx, url)
+		if err != nil {
+			logger.L.Error("failed to reopen stream for seek", "err", err)
+			return
+		}
+
+		seekTarget, doSeek = streamLoop(seekTarget)
 	}
 }
 
@@ -688,6 +754,38 @@ func (p *Player) GetDuration() (float64, error) {
 		return 0, nil
 	}
 	return float64(ts) / float64(sr), nil
+}
+
+// Seek jumps to the given absolute position in seconds without interrupting
+// the ALSA device or D-Bus reservation. The playback loop re-fetches the HTTP
+// stream and skips to the target in-place.
+func (p *Player) Seek(seconds float64) error {
+	p.muInfo.RLock()
+	sr := p.sampleRate
+	ts := p.totalSamples
+	p.muInfo.RUnlock()
+	if sr == 0 {
+		return nil
+	}
+
+	if seconds < 0 {
+		seconds = 0
+	}
+	maxSeconds := float64(ts) / float64(sr)
+	if seconds > maxSeconds {
+		seconds = maxSeconds
+	}
+
+	target := uint64(seconds * float64(sr))
+
+	// Non-blocking send: drop a stale pending seek if the loop hasn't consumed
+	// it yet, then send the new target.
+	select {
+	case <-p.seekCh:
+	default:
+	}
+	p.seekCh <- target
+	return nil
 }
 
 // Done returns a channel that is closed when the current track finishes
