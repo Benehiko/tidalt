@@ -57,7 +57,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           docker buildx bake \
-            --file packaging/docker-bake.hcl \
+            --file docker-bake.hcl \
             --set "*.args.VERSION=${VERSION}" \
             --set "*.output=type=local,dest=dist"
 
