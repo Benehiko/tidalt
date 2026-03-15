@@ -1442,7 +1442,7 @@ func (m Model) View() string {
 	}
 
 	// Build panel and join with list lines side-by-side.
-	if gutterL > 0 && m.currentTrack != nil {
+	if gutterL > 0 && listHeight > 0 && m.currentTrack != nil {
 		title := m.currentTrack.Title
 		artist := m.currentTrack.Artist.Name
 		album := m.currentTrack.Album.Title
