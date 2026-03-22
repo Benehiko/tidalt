@@ -232,6 +232,17 @@ type Player struct {
 	// Buffered 1 so Seek never blocks; the loop drains it before checking again.
 	seekCh chan uint64
 
+	// nextURLCh carries the next track's stream URL into the running
+	// playbackLoop so it can transition without closing the ALSA device.
+	// Buffered 1 so PlayNext never blocks.
+	nextURLCh chan string
+	// transitionDoneCh is set by PlayNext() before sending on nextURLCh.
+	// The playbackLoop installs it as the new doneCh once the new stream starts.
+	transitionDoneCh chan struct{}
+	// loopDone is closed when the playbackLoop goroutine returns.
+	// Used by stop() to wait for the goroutine independently of doneCh.
+	loopDone chan struct{}
+
 	// Track info — written by playbackLoop, read by UI tick
 	muInfo        sync.RWMutex
 	sampleRate    uint32
@@ -266,7 +277,8 @@ func (p *Player) getDevice() (string, error) {
 
 func NewPlayer() *Player {
 	p := &Player{
-		seekCh: make(chan uint64, 1),
+		seekCh:    make(chan uint64, 1),
+		nextURLCh: make(chan string, 1),
 	}
 	atomic.StoreUint64(&p.volumeBits, math.Float64bits(1.0))
 	return p
@@ -433,18 +445,24 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	doneCh := make(chan struct{})
+	loopDone := make(chan struct{})
 
 	p.mu.Lock()
 	p.cancel = cancel
 	p.doneCh = doneCh
+	p.loopDone = loopDone
 	p.currentURL = url
 	p.mu.Unlock()
 
 	atomic.StoreUint64(&p.samplesPlayed, 0)
 	atomic.StoreUint32(&p.paused, 0)
-	// Drain any pending seek so the new track starts from the beginning.
+	// Drain any pending seek/next-URL so the new track starts cleanly.
 	select {
 	case <-p.seekCh:
+	default:
+	}
+	select {
+	case <-p.nextURLCh:
 	default:
 	}
 
@@ -452,8 +470,17 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 	// lifetime of playback (releasing on pause, reacquiring on resume, and
 	// releasing again on final exit via defer).
 	go func() {
-		defer close(doneCh)
+		defer close(loopDone)
 		p.playbackLoop(ctx, url, device, releaseReservation)
+		// Close doneCh if the loop didn't already close it during a
+		// transition to the next track.
+		p.mu.Lock()
+		ch := p.doneCh
+		p.doneCh = nil
+		p.mu.Unlock()
+		if ch != nil {
+			close(ch)
+		}
 	}()
 	return doneCh, nil
 }
@@ -461,20 +488,57 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 func (p *Player) stop() {
 	p.mu.Lock()
 	cancel := p.cancel
-	doneCh := p.doneCh
+	loopDone := p.loopDone
 	p.cancel = nil
-	p.doneCh = nil
+	p.loopDone = nil
 	p.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
 	}
-	if doneCh != nil {
+	if loopDone != nil {
 		select {
-		case <-doneCh:
+		case <-loopDone:
 		case <-time.After(3 * time.Second):
 		}
 	}
+}
+
+// PlayNext signals the running playbackLoop to transition to a new track URL
+// without closing the ALSA device. If the new track has a different format
+// (sample rate, channels, bits), the loop will close and reopen the device
+// internally. If no playback loop is running, it falls back to Play().
+func (p *Player) PlayNext(url string) (<-chan struct{}, error) {
+	p.mu.Lock()
+	loopDone := p.loopDone
+	p.mu.Unlock()
+
+	if loopDone == nil {
+		return p.Play(url)
+	}
+	// Check if the loop is actually still alive.
+	select {
+	case <-loopDone:
+		return p.Play(url)
+	default:
+	}
+
+	newDone := make(chan struct{})
+
+	p.mu.Lock()
+	p.transitionDoneCh = newDone
+	p.mu.Unlock()
+
+	// Drain any stale next-URL, then send the new one.
+	select {
+	case <-p.nextURLCh:
+	default:
+	}
+	p.nextURLCh <- url
+
+	atomic.StoreUint32(&p.paused, 0)
+
+	return newDone, nil
 }
 
 // openStream fetches the FLAC HTTP stream and returns the response and decoder.
@@ -518,7 +582,6 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		releaseReservation()
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
 
 	logger.L.Debug("HTTP response",
 		"status", resp.StatusCode,
@@ -577,8 +640,9 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		"period_size", ah.periodSize,
 		"buffer_size", ah.bufferSize,
 	)
-	// ah and releaseReservation are both reassigned on pause/resume.
-	// The defer captures them by pointer so it always closes the current handle.
+	// ah and releaseReservation are both reassigned on pause/resume and on
+	// format-change transitions. The defer captures them by pointer so it
+	// always closes the current handle.
 	defer func() {
 		closeALSA(ah)
 		releaseReservation()
@@ -765,20 +829,124 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		return 0, false
 	}
 
-	seekTarget, doSeek := streamLoop(0)
-	for doSeek {
-		// Re-open the HTTP stream and skip to the seek target.
-		// samplesPlayed is NOT reset here — streamLoop sets it after skipping,
-		// so GetPosition() never briefly returns 0 between seeks.
-		_ = resp.Body.Close()
+	// Outer loop: play the current stream, then wait for a next-track URL
+	// or exit. This keeps the ALSA device open between consecutive tracks.
+	for {
+		seekTarget, doSeek := streamLoop(0)
+		for doSeek {
+			// Re-open the HTTP stream and skip to the seek target.
+			// samplesPlayed is NOT reset here — streamLoop sets it after skipping,
+			// so GetPosition() never briefly returns 0 between seeks.
+			_ = resp.Body.Close()
 
-		resp, stream, err = openStream(ctx, url)
-		if err != nil {
-			logger.L.Error("failed to reopen stream for seek", "err", err)
-			return
+			resp, stream, err = openStream(ctx, url)
+			if err != nil {
+				logger.L.Error("failed to reopen stream for seek", "err", err)
+				return
+			}
+
+			seekTarget, doSeek = streamLoop(seekTarget)
 		}
 
-		seekTarget, doSeek = streamLoop(seekTarget)
+		// Stream ended naturally (not a seek, not a cancel). Close the HTTP
+		// response and signal that this track is done so the UI can advance.
+		_ = resp.Body.Close()
+
+		p.mu.Lock()
+		oldDone := p.doneCh
+		p.doneCh = nil
+		p.mu.Unlock()
+		if oldDone != nil {
+			close(oldDone)
+		}
+
+		// Wait for the UI to provide the next track URL, or exit if the
+		// playlist is over / playback is cancelled.
+		select {
+		case nextURL := <-p.nextURLCh:
+			logger.L.Debug("transitioning to next track", "url", nextURL)
+			url = nextURL
+
+			resp, stream, err = openStream(ctx, nextURL)
+			if err != nil {
+				logger.L.Error("failed to open next stream", "err", err)
+				return
+			}
+
+			newInfo := stream.Info
+
+			// If the audio format changed, reopen the ALSA device.
+			if newInfo.SampleRate != sampleRate || newInfo.NChannels != channels || newInfo.BitsPerSample != bits {
+				logger.L.Debug("format change, reopening ALSA",
+					"oldRate", sampleRate, "newRate", newInfo.SampleRate,
+					"oldCh", channels, "newCh", newInfo.NChannels,
+					"oldBits", bits, "newBits", newInfo.BitsPerSample)
+				closeALSA(ah)
+				sampleRate = newInfo.SampleRate
+				channels = newInfo.NChannels
+				bits = newInfo.BitsPerSample
+				ah, err = openALSA(device, channels, sampleRate, bits)
+				if err != nil {
+					logger.L.Error("openALSA failed for next track", "err", err)
+					_ = resp.Body.Close()
+					return
+				}
+				bps = ah.bytesPerSample
+				// Update the reacquireALSA closure to use the new format.
+				reacquireALSA = func() (*alsaHandle, func(), error) {
+					rel, rerr := reserveALSADevice(cardNum)
+					if rerr != nil {
+						return nil, nil, rerr
+					}
+					a, aerr := openALSA(device, channels, sampleRate, bits)
+					if aerr != nil {
+						rel()
+						return nil, nil, aerr
+					}
+					return a, rel, nil
+				}
+			} else {
+				sampleRate = newInfo.SampleRate
+				channels = newInfo.NChannels
+				bits = newInfo.BitsPerSample
+			}
+
+			p.muInfo.Lock()
+			p.sampleRate = sampleRate
+			p.channels = channels
+			p.bitsPerSample = bits
+			p.totalSamples = newInfo.NSamples
+			p.muInfo.Unlock()
+
+			atomic.StoreUint64(&p.samplesPlayed, 0)
+			// Drain any pending seek so the new track starts from the beginning.
+			select {
+			case <-p.seekCh:
+			default:
+			}
+
+			// Install the new doneCh created by PlayNext().
+			p.mu.Lock()
+			p.doneCh = p.transitionDoneCh
+			p.transitionDoneCh = nil
+			p.currentURL = nextURL
+			p.mu.Unlock()
+
+			logger.L.Debug("FLAC stream (next track)",
+				"rate", sampleRate,
+				"channels", channels,
+				"bits", bits,
+				"samples", newInfo.NSamples,
+			)
+			continue // play the next stream
+
+		case <-ctx.Done():
+			return
+
+		case <-time.After(5 * time.Second):
+			logger.L.Debug("no next track within timeout, closing ALSA")
+			return
+		}
 	}
 }
 

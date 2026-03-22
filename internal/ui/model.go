@@ -324,6 +324,16 @@ func (m *Model) nextIndex() int {
 // In client mode it resolves the stream URL and forwards it to the parent
 // instance via MPRIS, then returns nil (no local playback state to track).
 func (m *Model) playTrackCmd(track tidal.Track) tea.Cmd {
+	return m.doPlayTrack(track, m.player.Play)
+}
+
+// playNextTrackCmd is like playTrackCmd but uses PlayNext to transition
+// without closing the ALSA device, avoiding pops between playlist tracks.
+func (m *Model) playNextTrackCmd(track tidal.Track) tea.Cmd {
+	return m.doPlayTrack(track, m.player.PlayNext)
+}
+
+func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struct{}, error)) tea.Cmd {
 	if m.clientMode {
 		mc := m.mprisClient
 		if m.localPlaylist && len(m.tracks) > 0 {
@@ -380,7 +390,7 @@ func (m *Model) playTrackCmd(track tidal.Track) tea.Cmd {
 		if err != nil {
 			return errMsg(err)
 		}
-		done, err := m.player.Play(url)
+		done, err := playFn(url)
 		if err != nil {
 			return errMsg(err)
 		}
@@ -1020,7 +1030,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currPos = 0
 				m.duration = 0
 				_ = m.store.CacheTrack(track.ID, track)
-				return m, m.playTrackCmd(track)
+				return m, m.playNextTrackCmd(track)
 			}
 			m.isPlaying = false
 			m.pushState()
@@ -1158,7 +1168,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.currPos = 0
 					m.duration = 0
 					_ = m.store.CacheTrack(track.ID, track)
-					return m, tea.Batch(m.playTrackCmd(track), listenMPRIS(m.mprisCh))
+					return m, tea.Batch(m.playNextTrackCmd(track), listenMPRIS(m.mprisCh))
 				}
 			}
 		case mpris.CmdPrevious:
