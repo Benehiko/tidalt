@@ -284,6 +284,27 @@ func (m *Model) applyShuffle() {
 	m.shufflePlayed = nil
 }
 
+// prevIndex returns the index of the previously played track. In shuffle
+// modes it pops from the play history stack; otherwise it returns cursor-1.
+// Returns -1 if there is no previous track.
+func (m *Model) prevIndex() int {
+	if len(m.tracks) == 0 {
+		return -1
+	}
+	if len(m.shufflePlayed) > 0 {
+		prev := m.shufflePlayed[len(m.shufflePlayed)-1]
+		m.shufflePlayed = m.shufflePlayed[:len(m.shufflePlayed)-1]
+		if prev >= 0 && prev < len(m.tracks) {
+			return prev
+		}
+	}
+	prev := m.cursor - 1
+	if prev >= 0 {
+		return prev
+	}
+	return -1
+}
+
 // nextIndex returns the index of the next track to play given the current
 // cursor and shuffle mode. Returns -1 if there is no next track.
 func (m *Model) nextIndex() int {
@@ -892,6 +913,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+		case ">", ".":
+			if m.state != StateDeviceSelect && len(m.tracks) > 0 {
+				m.shufflePlayed = append(m.shufflePlayed, m.cursor)
+				next := m.nextIndex()
+				if next >= 0 {
+					m.advancing = true
+					m.cursor = next
+					track := m.tracks[next]
+					m.currPos = 0
+					m.duration = 0
+					_ = m.store.CacheTrack(track.ID, track)
+					return m, m.playNextTrackCmd(track)
+				}
+			}
+
+		case "<", ",":
+			if m.state != StateDeviceSelect && len(m.tracks) > 0 {
+				prev := m.prevIndex()
+				if prev >= 0 {
+					m.advancing = false
+					m.cursor = prev
+					track := m.tracks[prev]
+					m.currPos = 0
+					m.duration = 0
+					_ = m.store.CacheTrack(track.ID, track)
+					return m, m.playTrackCmd(track)
+				}
+			}
+
 		case "f":
 			var favTrack *tidal.Track
 			if m.state == StateSearch && len(m.searchTracks) > 0 {
@@ -1158,21 +1208,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.player.Pause()
 			m.isPlaying = !m.isPlaying
 		case mpris.CmdNext:
-			if !m.advancing {
-				m.shufflePlayed = append(m.shufflePlayed, m.cursor)
-				next := m.nextIndex()
-				if next >= 0 {
-					m.advancing = true
-					m.cursor = next
-					track := m.tracks[next]
-					m.currPos = 0
-					m.duration = 0
-					_ = m.store.CacheTrack(track.ID, track)
-					return m, tea.Batch(m.playNextTrackCmd(track), listenMPRIS(m.mprisCh))
-				}
+			m.shufflePlayed = append(m.shufflePlayed, m.cursor)
+			next := m.nextIndex()
+			if next >= 0 {
+				m.advancing = true
+				m.cursor = next
+				track := m.tracks[next]
+				m.currPos = 0
+				m.duration = 0
+				_ = m.store.CacheTrack(track.ID, track)
+				return m, tea.Batch(m.playNextTrackCmd(track), listenMPRIS(m.mprisCh))
 			}
 		case mpris.CmdPrevious:
-			prev := m.cursor - 1
+			prev := m.prevIndex()
 			if prev >= 0 {
 				m.advancing = false
 				m.cursor = prev
@@ -1583,7 +1631,7 @@ func (m Model) View() string {
 		if m.clientMode && m.localPlaylist {
 			footer = "\n [TAB] Switch Tab | [ENTER] Send playlist + Play | [r] Radio | [f] Favorite | [9/0] Vol | [q] Quit\n"
 		} else {
-			footer = "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [s] Shuffle | [r] Radio | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
+			footer = "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [>/<] Next/Prev | [s] Shuffle | [r] Radio | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
 		}
 	}
 
