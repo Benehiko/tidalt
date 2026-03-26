@@ -239,6 +239,10 @@ type Player struct {
 	// transitionDoneCh is set by PlayNext() before sending on nextURLCh.
 	// The playbackLoop installs it as the new doneCh once the new stream starts.
 	transitionDoneCh chan struct{}
+	// skipCh is closed by PlayNext to interrupt the current streamLoop
+	// immediately, so the outer loop can pick up the next URL without
+	// waiting for the current track to finish.
+	skipCh chan struct{}
 	// loopDone is closed when the playbackLoop goroutine returns.
 	// Used by stop() to wait for the goroutine independently of doneCh.
 	loopDone chan struct{}
@@ -279,6 +283,7 @@ func NewPlayer() *Player {
 	p := &Player{
 		seekCh:    make(chan uint64, 1),
 		nextURLCh: make(chan string, 1),
+		skipCh:    make(chan struct{}),
 	}
 	atomic.StoreUint64(&p.volumeBits, math.Float64bits(1.0))
 	return p
@@ -452,6 +457,7 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 	p.doneCh = doneCh
 	p.loopDone = loopDone
 	p.currentURL = url
+	p.skipCh = make(chan struct{})
 	p.mu.Unlock()
 
 	atomic.StoreUint64(&p.samplesPlayed, 0)
@@ -527,6 +533,10 @@ func (p *Player) PlayNext(url string) (<-chan struct{}, error) {
 
 	p.mu.Lock()
 	p.transitionDoneCh = newDone
+	// Close the current skipCh to interrupt the running streamLoop, then
+	// create a fresh one for the next track.
+	close(p.skipCh)
+	p.skipCh = make(chan struct{})
 	p.mu.Unlock()
 
 	// Drain any stale next-URL, then send the new one.
@@ -659,6 +669,12 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 	}
 
 	streamLoop := func(skipSamples uint64) (seekTarget uint64, doSeek bool) {
+		// Capture the current skipCh so we can detect when PlayNext()
+		// interrupts this stream.
+		p.mu.Lock()
+		skipCh := p.skipCh
+		p.mu.Unlock()
+
 		stopDecode := make(chan struct{})
 		pcmCh := make(chan pcmBuf, 2)
 
@@ -750,6 +766,18 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 				default:
 				}
 
+				// Check for a skip (next-track) request from PlayNext().
+				select {
+				case <-skipCh:
+					C.snd_pcm_drop(ah.pcm)
+					C.snd_pcm_prepare(ah.pcm)
+					close(stopDecode)
+					for range pcmCh {
+					}
+					return 0, false
+				default:
+				}
+
 				// Check pause: release the ALSA device so PipeWire / other
 				// apps can use it while we are idle, then reacquire on resume.
 				if atomic.LoadUint32(&p.paused) == 1 {
@@ -773,6 +801,11 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 							ah = newAH
 							releaseReservation = newRel
 							return returnSeek(target)
+						case <-skipCh:
+							close(stopDecode)
+							for range pcmCh {
+							}
+							return 0, false
 						case <-ctx.Done():
 							close(stopDecode)
 							for range pcmCh {
