@@ -130,6 +130,7 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 | `f`            | Toggle favorite on selected track            |
 | `9`            | Volume down 5%                               |
 | `0`            | Volume up 5%                                 |
+| `c`            | Copy current track link to clipboard         |
 | `d`            | Open output device selector                  |
 | `Esc`          | Close device selector                        |
 | `q` / `Ctrl+C` | Quit                                         |

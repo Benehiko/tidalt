@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -967,6 +968,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return favoriteMsg{trackID: track.ID, added: !isFav}
 				}
 			}
+
+		case "c":
+			if m.currentTrack != nil {
+				link := fmt.Sprintf("https://tidal.com/track/%d", m.currentTrack.ID)
+				if err := clipboard.WriteAll(link); err != nil {
+					m.errText = err.Error()
+				} else {
+					m.errText = "Copied link to clipboard"
+					return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+				}
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -1579,7 +1591,7 @@ func (m Model) View() string {
 				listLines = append(listLines, line)
 			}
 		}
-		footer = "\n [TAB] Switch Tab | [ENTER] Play/Select | [SPACE] Pause | [9/0] Vol | [d] Device | [q] Quit\n"
+		footer = "\n [TAB] Switch Tab | [ENTER] Play/Select | [SPACE] Pause | [9/0] Vol | [c] Copy Link | [d] Device | [q] Quit\n"
 
 	case StateSearch:
 		if m.searchLoading {
@@ -1606,7 +1618,7 @@ func (m Model) View() string {
 				}
 			}
 		}
-		footer = "\n [TAB] Switch Tab | [ENTER] Search / Play | [↑/↓] Navigate | [SPACE] Pause | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
+		footer = "\n [TAB] Switch Tab | [ENTER] Search / Play | [↑/↓] Navigate | [SPACE] Pause | [f] Favorite | [c] Copy Link | [9/0] Vol | [d] Device | [q] Quit\n"
 
 	default:
 		items := m.tracks
@@ -1631,7 +1643,7 @@ func (m Model) View() string {
 		if m.clientMode && m.localPlaylist {
 			footer = "\n [TAB] Switch Tab | [ENTER] Send playlist + Play | [r] Radio | [f] Favorite | [9/0] Vol | [q] Quit\n"
 		} else {
-			footer = "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [>/<] Next/Prev | [s] Shuffle | [r] Radio | [f] Favorite | [9/0] Vol | [d] Device | [q] Quit\n"
+			footer = "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [>/<] Next/Prev | [s] Shuffle | [r] Radio | [f] Favorite | [c] Copy Link | [9/0] Vol | [d] Device | [q] Quit\n"
 		}
 	}
 
