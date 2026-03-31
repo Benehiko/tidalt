@@ -36,6 +36,7 @@ const (
 	CmdOpenURL      // URL is in Event.URL
 	CmdPlayTrackID  // TrackID is in Event.TrackID
 	CmdPlayPlaylist // PlaylistJSON and PlaylistStartIndex are in Event
+	CmdSetDevice    // Device is in Event.Device
 )
 
 // Event is sent on the Commands channel for every media key press or URL
@@ -46,6 +47,7 @@ type Event struct {
 	TrackID            int    // non-zero only for CmdPlayTrackID
 	PlaylistJSON       string // non-empty only for CmdPlayPlaylist
 	PlaylistStartIndex int    // for CmdPlayPlaylist: index of the first track to play
+	Device             string // non-empty only for CmdSetDevice
 }
 
 // PlayerState is the snapshot of playback state the parent broadcasts.
@@ -244,6 +246,11 @@ func (c *Client) SendPrevious() error {
 	return c.obj.Call("org.mpris.MediaPlayer2.Player.Previous", 0).Err
 }
 
+// SendDevice tells the running instance to switch to a different ALSA device.
+func (c *Client) SendDevice(hwName string) error {
+	return c.obj.Call(appIface+".SetDevice", 0, hwName).Err
+}
+
 // GetState fetches the current playback state from the running instance.
 func (c *Client) GetState() (PlayerState, error) {
 	var trackJSON, playlistJSON, status, device, shuffleMode string
@@ -355,6 +362,16 @@ func (a *tidalApp) PlayTrackID(trackID int) *dbus.Error {
 func (a *tidalApp) PlayPlaylist(tracksJSON string, startIndex int) *dbus.Error {
 	select {
 	case a.ch <- Event{Cmd: CmdPlayPlaylist, PlaylistJSON: tracksJSON, PlaylistStartIndex: startIndex}:
+	default:
+	}
+	return nil
+}
+
+// SetDevice is called by a client instance to change the ALSA device on the
+// running server.
+func (a *tidalApp) SetDevice(hwName string) *dbus.Error {
+	select {
+	case a.ch <- Event{Cmd: CmdSetDevice, Device: hwName}:
 	default:
 	}
 	return nil
@@ -560,6 +577,9 @@ const introspectionXML = `<!DOCTYPE node PUBLIC
     <method name="PlayPlaylist">
       <arg name="tracksJSON"  type="s" direction="in"/>
       <arg name="startIndex"  type="i" direction="in"/>
+    </method>
+    <method name="SetDevice">
+      <arg name="hwName" type="s" direction="in"/>
     </method>
     <method name="GetState">
       <arg name="currentTrackJSON" type="s" direction="out"/>

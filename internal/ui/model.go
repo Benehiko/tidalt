@@ -744,6 +744,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == StateDeviceSelect && len(m.devices) > 0 {
 				chosen := m.devices[m.cursor]
 				m.currentDevice = chosen.HWName
+				if m.clientMode {
+					mc := m.mprisClient
+					m.state = m.prevState
+					m.cursor = 0
+					return m, func() tea.Msg {
+						if err := mc.SendDevice(chosen.HWName); err != nil {
+							return errMsg(err)
+						}
+						return nil
+					}
+				}
 				m.player.SetDevice(chosen.HWName)
 				_ = m.store.SaveDevice(chosen.HWName)
 				m.state = m.prevState
@@ -1291,6 +1302,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				},
 				listenMPRIS(m.mprisCh),
 			)
+		case mpris.CmdSetDevice:
+			m.currentDevice = ev.Device
+			m.player.SetDevice(ev.Device)
+			_ = m.store.SaveDevice(ev.Device)
 		}
 		return m, listenMPRIS(m.mprisCh)
 	}
