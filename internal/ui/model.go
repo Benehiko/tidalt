@@ -83,7 +83,8 @@ type Model struct {
 	currentTrack *tidal.Track
 	volume       float64
 	isPlaying    bool
-	advancing    bool // true while auto-advancing to next track; suppresses re-trigger
+	advancing    bool   // true while auto-advancing to next track; suppresses re-trigger
+	skipGen      uint64 // monotonic counter; incremented on every doPlayTrack call
 	progress     progress.Model
 	currPos      float64
 	duration     float64
@@ -246,10 +247,13 @@ type (
 	nowPlayingMsg      struct {
 		done  <-chan struct{}
 		track *tidal.Track // refreshed track metadata (may be nil)
+		gen   uint64       // skip generation that spawned this command
 	}
-	trackDoneMsg struct{}
-	mprisMsg     mpris.Event
-	favoriteMsg  struct {
+	trackDoneMsg struct {
+		gen uint64
+	}
+	mprisMsg    mpris.Event
+	favoriteMsg struct {
 		trackID int
 		added   bool
 	}
@@ -386,9 +390,11 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 	}
 	m.currentTrack = &track
 	m.isPlaying = true
+	m.skipGen++
 	m.advancing = true // suppresses any stale trackDoneMsg until nowPlayingMsg resets it
 	m.restorePosition = 0
 	_ = m.store.SaveLastTrackID(track.ID)
+	gen := m.skipGen
 	ctx := m.ctx
 	client := m.client
 	return func() tea.Msg {
@@ -419,9 +425,9 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 
 		res := <-freshCh
 		if res.err == nil && res.track != nil {
-			return nowPlayingMsg{done: done, track: res.track}
+			return nowPlayingMsg{done: done, track: res.track, gen: gen}
 		}
-		return nowPlayingMsg{done: done}
+		return nowPlayingMsg{done: done, gen: gen}
 	}
 }
 
@@ -500,10 +506,10 @@ func barTickCmd() tea.Cmd {
 // is closed (i.e. the track finished naturally), then sends a trackDoneMsg.
 // Callers should pass the channel returned by player.Play() directly so there
 // is no race between stop() clearing the old channel and Play() setting a new one.
-func waitForTrackDone(done <-chan struct{}) tea.Cmd {
+func waitForTrackDone(done <-chan struct{}, gen uint64) tea.Cmd {
 	return func() tea.Msg {
 		<-done
-		return trackDoneMsg{}
+		return trackDoneMsg{gen: gen}
 	}
 }
 
@@ -993,6 +999,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.regenKittyRows()
 
 	case nowPlayingMsg:
+		if msg.gen != m.skipGen {
+			return m, nil // stale — a newer doPlayTrack superseded this one
+		}
 		m.advancing = false
 		// Update currentTrack with refreshed metadata (includes cover UUID).
 		if msg.track != nil {
@@ -1005,7 +1014,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.restorePosition = 0
 			_ = m.player.Seek(pos)
 		}
-		return m, tea.Batch(waitForTrackDone(msg.done), m.maybeUpdateCover(m.currentTrack))
+		return m, tea.Batch(waitForTrackDone(msg.done, msg.gen), m.maybeUpdateCover(m.currentTrack))
 
 	case coverLoadedMsg:
 		if msg.key == m.coverCacheKey {
@@ -1082,6 +1091,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case trackDoneMsg:
+		if msg.gen != m.skipGen {
+			break // stale — from a track that was already skipped past
+		}
 		if !m.advancing {
 			m.shufflePlayed = append(m.shufflePlayed, m.cursor)
 			next := m.nextIndex()
