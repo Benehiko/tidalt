@@ -355,9 +355,13 @@ func reserveALSADevice(cardNum int) (release func(), err error) {
 
 	// Ask the current owner (WirePlumber) to release the device, then claim
 	// the name ourselves with ReplaceExisting so WirePlumber cannot reopen it.
+	// If the call errors it means nobody currently holds the name (no owner to
+	// dispatch to), so the device is already free — skip straight to RequestName.
+	// Only treat an explicit released==false as a hard refusal.
 	obj := conn.Object(name, objPath)
 	var released bool
-	if callErr := obj.Call("org.freedesktop.ReserveDevice1.RequestRelease", 0, int32(math.MaxInt32)).Store(&released); callErr != nil || !released {
+	callErr := obj.Call("org.freedesktop.ReserveDevice1.RequestRelease", 0, int32(math.MaxInt32)).Store(&released)
+	if callErr == nil && !released {
 		_ = conn.Close()
 		return nil, fmt.Errorf("audio device Audio%d is held by another process and refused to release", cardNum)
 	}
@@ -661,18 +665,21 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 	bps := ah.bytesPerSample
 
 	// streamLoop runs the decode→ALSA pipeline for the current HTTP stream.
-	// Returns (seekTarget, true) if a seek was requested, or (0, false) when
-	// the stream ends naturally or the context is cancelled.
+	// Returns (seekTarget, true, false) if a seek was requested,
+	// (0, false, false) when the stream ends naturally or the context is
+	// cancelled, or (0, false, true) when an unrecoverable error occurred
+	// mid-stream (e.g. ALSA reacquire failed) so the outer loop can exit
+	// without signalling a natural track completion.
 	type pcmBuf struct {
 		data    []byte
 		nFrames int
 	}
 
-	streamLoop := func(skipSamples uint64) (seekTarget uint64, doSeek bool) {
+	streamLoop := func(skipSamples uint64) (seekTarget uint64, doSeek, aborted bool) {
 		// Capture the current skipCh so we can detect when PlayNext()
 		// interrupts this stream.
 		p.mu.Lock()
-		skipCh := p.skipCh
+		skipCh := p.skipCh //nolint:gocritic
 		p.mu.Unlock()
 
 		stopDecode := make(chan struct{})
@@ -746,14 +753,14 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			}
 		}()
 
-		returnSeek := func(target uint64) (uint64, bool) {
+		returnSeek := func(target uint64) (uint64, bool, bool) {
 			close(stopDecode)
 			// Drain so the decode goroutine can unblock and exit.
 			for range pcmCh {
 			}
 			C.snd_pcm_drop(ah.pcm)
 			C.snd_pcm_prepare(ah.pcm)
-			return target, true
+			return target, true, false
 		}
 
 		for pcm := range pcmCh {
@@ -774,7 +781,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 					close(stopDecode)
 					for range pcmCh {
 					}
-					return 0, false
+					return 0, false, false
 				default:
 				}
 
@@ -796,7 +803,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 								close(stopDecode)
 								for range pcmCh {
 								}
-								return 0, false
+								return 0, false, true
 							}
 							ah = newAH
 							releaseReservation = newRel
@@ -805,12 +812,12 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 							close(stopDecode)
 							for range pcmCh {
 							}
-							return 0, false
+							return 0, false, false
 						case <-ctx.Done():
 							close(stopDecode)
 							for range pcmCh {
 							}
-							return 0, false
+							return 0, false, false
 						case <-time.After(20 * time.Millisecond):
 						}
 					}
@@ -822,7 +829,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 						close(stopDecode)
 						for range pcmCh {
 						}
-						return 0, false
+						return 0, false, true
 					}
 					ah = newAH
 					releaseReservation = newRel
@@ -836,7 +843,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 					close(stopDecode)
 					for range pcmCh {
 					}
-					return 0, false
+					return 0, false, false
 				default:
 				}
 
@@ -851,7 +858,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 						close(stopDecode)
 						for range pcmCh {
 						}
-						return 0, false
+						return 0, false, true
 					}
 					continue
 				}
@@ -859,13 +866,13 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			}
 			atomic.AddUint64(&p.samplesPlayed, uint64(pcm.nFrames))
 		}
-		return 0, false
+		return 0, false, false
 	}
 
 	// Outer loop: play the current stream, then wait for a next-track URL
 	// or exit. This keeps the ALSA device open between consecutive tracks.
 	for {
-		seekTarget, doSeek := streamLoop(0)
+		seekTarget, doSeek, aborted := streamLoop(0)
 		for doSeek {
 			// Re-open the HTTP stream and skip to the seek target.
 			// samplesPlayed is NOT reset here — streamLoop sets it after skipping,
@@ -878,13 +885,19 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 				return
 			}
 
-			seekTarget, doSeek = streamLoop(seekTarget)
+			seekTarget, doSeek, aborted = streamLoop(seekTarget)
 		}
 
-		// Stream ended naturally (not a seek, not a cancel). Close the HTTP
-		// response and signal that this track is done so the UI can advance.
 		_ = resp.Body.Close()
 
+		// If the stream loop aborted due to an unrecoverable error (e.g. ALSA
+		// reacquire failed), exit without signalling a natural track completion
+		// so the UI does not auto-advance into the same broken state.
+		if aborted {
+			return
+		}
+
+		// Stream ended naturally — signal the UI so it can advance the queue.
 		p.mu.Lock()
 		oldDone := p.doneCh
 		p.doneCh = nil
