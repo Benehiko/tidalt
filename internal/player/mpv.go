@@ -481,9 +481,17 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 	// releasing again on final exit via defer).
 	go func() {
 		defer close(loopDone)
-		p.playbackLoop(ctx, url, device, releaseReservation)
-		// Close doneCh if the loop didn't already close it during a
-		// transition to the next track.
+		natural := p.playbackLoop(ctx, url, device, releaseReservation)
+		// Only close doneCh when the loop ended naturally (track finished or
+		// transitioned). An aborted loop (openALSA failed, stream error, etc.)
+		// must not close doneCh, otherwise the UI treats it as a completed
+		// track and auto-advances into the same broken state.
+		if !natural {
+			p.mu.Lock()
+			p.doneCh = nil
+			p.mu.Unlock()
+			return
+		}
 		p.mu.Lock()
 		ch := p.doneCh
 		p.doneCh = nil
@@ -580,21 +588,25 @@ func closeALSA(ah *alsaHandle) {
 	C.snd_pcm_close(ah.pcm)
 }
 
-func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseReservation func()) {
+// playbackLoop runs the full playback lifecycle for a track (and subsequent
+// gapless transitions). Returns true if playback ended naturally (track
+// finished or transitioned), false if it aborted due to an error before any
+// audio was produced (e.g. openALSA failed, stream could not be opened).
+func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseReservation func()) bool {
 	logger.L.Debug("playbackLoop start", "url", url)
 
 	cardNum, err := parseCardNum(device)
 	if err != nil {
 		logger.L.Error("playbackLoop: cannot parse card number", "device", device, "err", err)
 		releaseReservation()
-		return
+		return false
 	}
 
 	resp, stream, err := openStream(ctx, url)
 	if err != nil {
 		logger.L.Error("failed to open stream", "err", err)
 		releaseReservation()
-		return
+		return false
 	}
 
 	logger.L.Debug("HTTP response",
@@ -641,7 +653,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 	if err != nil {
 		logger.L.Error("openALSA failed", "device", device, "err", err)
 		releaseReservation()
-		return
+		return false
 	}
 	logger.L.Debug("ALSA opened",
 		"device", device,
@@ -882,7 +894,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			resp, stream, err = openStream(ctx, url)
 			if err != nil {
 				logger.L.Error("failed to reopen stream for seek", "err", err)
-				return
+				return false
 			}
 
 			seekTarget, doSeek, aborted = streamLoop(seekTarget)
@@ -894,7 +906,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		// reacquire failed), exit without signalling a natural track completion
 		// so the UI does not auto-advance into the same broken state.
 		if aborted {
-			return
+			return false
 		}
 
 		// Stream ended naturally — signal the UI so it can advance the queue.
@@ -916,7 +928,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			resp, stream, err = openStream(ctx, nextURL)
 			if err != nil {
 				logger.L.Error("failed to open next stream", "err", err)
-				return
+				return false
 			}
 
 			newInfo := stream.Info
@@ -935,7 +947,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 				if err != nil {
 					logger.L.Error("openALSA failed for next track", "err", err)
 					_ = resp.Body.Close()
-					return
+					return false
 				}
 				bps = ah.bytesPerSample
 				// Update the reacquireALSA closure to use the new format.
@@ -987,11 +999,11 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			continue // play the next stream
 
 		case <-ctx.Done():
-			return
+			return true
 
 		case <-time.After(5 * time.Second):
 			logger.L.Debug("no next track within timeout, closing ALSA")
-			return
+			return true
 		}
 	}
 }
