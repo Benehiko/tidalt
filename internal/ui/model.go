@@ -252,6 +252,12 @@ type (
 	trackDoneMsg struct {
 		gen uint64
 	}
+	// skipErrMsg is returned when a track cannot be streamed (e.g. no FLAC
+	// available). It shows a transient error and auto-advances the queue.
+	skipErrMsg struct {
+		err error
+		gen uint64
+	}
 	mprisMsg    mpris.Event
 	favoriteMsg struct {
 		trackID int
@@ -416,7 +422,9 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 
 		url, err := client.GetStreamURL(ctx, track.ID)
 		if err != nil {
-			return errMsg(err)
+			// No FLAC stream available — show the error briefly but treat the
+			// track as done so the queue auto-advances to the next track.
+			return skipErrMsg{err: err, gen: gen}
 		}
 		done, err := playFn(url)
 		if err != nil {
@@ -1100,6 +1108,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if coverCmd != nil {
 			return m, coverCmd
 		}
+
+	case skipErrMsg:
+		if msg.gen != m.skipGen {
+			break
+		}
+		m.errText = msg.err.Error()
+		m.advancing = false
+		m.shufflePlayed = append(m.shufflePlayed, m.cursor)
+		next := m.nextIndex()
+		if next >= 0 {
+			m.advancing = true
+			m.cursor = next
+			track := m.tracks[next]
+			m.currPos = 0
+			m.duration = 0
+			_ = m.store.CacheTrack(track.ID, track)
+			return m, tea.Batch(
+				m.playNextTrackCmd(track),
+				tea.Tick(5*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }),
+			)
+		}
+		m.isPlaying = false
+		m.pushState()
+		return m, tea.Tick(5*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 
 	case trackDoneMsg:
 		if msg.gen != m.skipGen {
