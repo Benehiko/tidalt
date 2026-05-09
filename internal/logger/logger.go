@@ -2,7 +2,6 @@ package logger
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -14,9 +13,9 @@ import (
 var L *slog.Logger
 
 func init() {
-	if os.Getenv("TIDALT_DEBUG") != "true" {
-		L = slog.New(slog.NewTextHandler(io.Discard, nil))
-		return
+	level := slog.LevelInfo
+	if os.Getenv("TIDALT_DEBUG") == "true" {
+		level = slog.LevelDebug
 	}
 
 	home, err := os.UserHomeDir()
@@ -26,16 +25,16 @@ func init() {
 	logDir := filepath.Join(home, ".local", "share", "tidalt")
 	_ = os.MkdirAll(logDir, 0o700)
 
-	logFile := filepath.Join(logDir, "debug-"+time.Now().Format("20060102-150405")+".log")
+	logFile := filepath.Join(logDir, "tidalt-"+time.Now().Format("20060102-150405")+".log")
 	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		// Fall back to stderr if the file can't be opened.
-		L = slog.New(&redactHandler{slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})})
+		L = slog.New(&redactHandler{slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})})
 		return
 	}
 
-	L = slog.New(&redactHandler{slog.NewTextHandler(f, &slog.HandlerOptions{Level: slog.LevelDebug})})
-	L.Info("debug logging enabled", "file", logFile)
+	L = slog.New(&redactHandler{slog.NewTextHandler(f, &slog.HandlerOptions{Level: level})})
+	L.Info("logging started", "file", logFile, "level", level)
 }
 
 // redactHandler wraps a slog.Handler and strips query strings from URL values
