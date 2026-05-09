@@ -213,16 +213,27 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int) (string, error) 
 				return "", err
 			}
 			if len(s.URLs) == 0 {
-				return "", fmt.Errorf("stream response contained no URLs")
+				lastErr = fmt.Errorf("get stream (%s): response contained no URLs", q)
+				continue
 			}
-			return s.URLs[0], nil
+			// Tidal may return AAC/MP4 even for lossless quality tiers when the
+			// track is not available in FLAC. Only accept FLAC streams.
+			u := s.URLs[0]
+			if !strings.HasSuffix(strings.ToLower(strings.SplitN(u, "?", 2)[0]), ".flac") {
+				lastErr = fmt.Errorf("get stream (%s): non-FLAC URL returned (%s)", q, u)
+				continue
+			}
+			return u, nil
 		}
 
 		body, _ := io.ReadAll(resp.Body)
 		lastErr = apiErr("get stream ("+q+")", resp.StatusCode, body)
 	}
 
-	return "", lastErr
+	if lastErr != nil {
+		return "", fmt.Errorf("no FLAC stream available for track %d: %w", trackID, lastErr)
+	}
+	return "", fmt.Errorf("no FLAC stream available for track %d", trackID)
 }
 
 func (c *Client) GetFavorites(ctx context.Context, limit int) ([]Track, error) {
