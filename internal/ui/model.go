@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Benehiko/tidalt/v3/internal/logger"
 	"github.com/Benehiko/tidalt/v3/internal/mpris"
 	"github.com/Benehiko/tidalt/v3/internal/player"
 	"github.com/Benehiko/tidalt/v3/internal/store"
@@ -424,10 +425,12 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 		if err != nil {
 			// No FLAC stream available — show the error briefly but treat the
 			// track as done so the queue auto-advances to the next track.
+			logger.L.Error("GetStreamURL failed", "trackID", track.ID, "err", err)
 			return skipErrMsg{err: err, gen: gen}
 		}
 		done, err := playFn(url)
 		if err != nil {
+			logger.L.Error("playFn failed", "trackID", track.ID, "err", err)
 			return errMsg(err)
 		}
 

@@ -593,7 +593,7 @@ func closeALSA(ah *alsaHandle) {
 // finished or transitioned), false if it aborted due to an error before any
 // audio was produced (e.g. openALSA failed, stream could not be opened).
 func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseReservation func()) bool {
-	logger.L.Debug("playbackLoop start", "url", url)
+	logger.L.Debug("playbackLoop start")
 
 	cardNum, err := parseCardNum(device)
 	if err != nil {
@@ -922,7 +922,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		// playlist is over / playback is cancelled.
 		select {
 		case nextURL := <-p.nextURLCh:
-			logger.L.Debug("transitioning to next track", "url", nextURL)
+			logger.L.Debug("transitioning to next track")
 			url = nextURL
 
 			resp, stream, err = openStream(ctx, nextURL)

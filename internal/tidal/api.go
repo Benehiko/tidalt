@@ -218,12 +218,14 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int) (string, error) 
 			}
 			// Tidal may return AAC/MP4 even for lossless quality tiers when the
 			// track is not available in FLAC. Only accept FLAC streams.
-			u := s.URLs[0]
-			if !strings.HasSuffix(strings.ToLower(strings.SplitN(u, "?", 2)[0]), ".flac") {
-				lastErr = fmt.Errorf("get stream (%s): non-FLAC URL returned (%s)", q, u)
+			streamURL := s.URLs[0]
+			base := strings.SplitN(streamURL, "?", 2)[0]
+			if !strings.HasSuffix(strings.ToLower(base), ".flac") {
+				ext := base[strings.LastIndex(base, ".")+1:]
+				lastErr = fmt.Errorf("get stream (%s): non-FLAC format (%s)", q, ext)
 				continue
 			}
-			return u, nil
+			return streamURL, nil
 		}
 
 		body, _ := io.ReadAll(resp.Body)
