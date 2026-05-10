@@ -1039,6 +1039,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentTrack = msg.track
 			_ = m.store.CacheTrack(msg.track.ID, *msg.track)
 		}
+		// Reset position and seed duration from track metadata so the progress
+		// bar is correct before the first tick fires.
+		if m.restorePosition == 0 {
+			m.currPos = 0
+		}
+		if m.currentTrack != nil && m.currentTrack.Duration > 0 {
+			m.duration = float64(m.currentTrack.Duration)
+		}
 		m.pushState()
 		if m.restorePosition > 0 {
 			pos := m.restorePosition
