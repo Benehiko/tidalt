@@ -438,6 +438,9 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 			logger.L.Error("playFn failed", "trackID", track.ID, "err", err)
 			return errMsg(err)
 		}
+		if track.Duration > 0 {
+			m.player.SetDuration(float64(track.Duration))
+		}
 
 		res := <-freshCh
 		if res.err == nil && res.track != nil {

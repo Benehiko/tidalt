@@ -251,6 +251,9 @@ type Player struct {
 	channels      uint8
 	bitsPerSample uint8
 	totalSamples  uint64
+	// hintDuration is set by SetDuration from the Tidal API track.Duration field
+	// and used as a fallback when totalSamples is 0 (e.g. streaming mp4).
+	hintDuration float64
 
 	// Atomics: safe for concurrent access without a mutex
 	samplesPlayed uint64
@@ -464,6 +467,10 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 
 	atomic.StoreUint64(&p.samplesPlayed, 0)
 	atomic.StoreUint32(&p.paused, 0)
+	p.muInfo.Lock()
+	p.totalSamples = 0
+	p.hintDuration = 0
+	p.muInfo.Unlock()
 	// Drain any pending seek/next-URL so the new track starts cleanly.
 	select {
 	case <-p.seekCh:
@@ -611,6 +618,9 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 	p.channels = channels
 	p.bitsPerSample = bits
 	p.totalSamples = info.NSamples
+	if info.NSamples > 0 {
+		p.hintDuration = 0 // stream has real sample count; clear API hint
+	}
 	p.muInfo.Unlock()
 
 	// reacquireALSA re-claims the D-Bus reservation and reopens the ALSA
@@ -1012,11 +1022,24 @@ func (p *Player) GetDuration() (float64, error) {
 	p.muInfo.RLock()
 	sr := p.sampleRate
 	ts := p.totalSamples
+	hint := p.hintDuration
 	p.muInfo.RUnlock()
-	if sr == 0 {
-		return 0, nil
+	if ts > 0 && sr > 0 {
+		return float64(ts) / float64(sr), nil
 	}
-	return float64(ts) / float64(sr), nil
+	if hint > 0 {
+		return hint, nil
+	}
+	return 0, nil
+}
+
+// SetDuration seeds the known track duration (in seconds) from the Tidal API
+// so that GetDuration works even when the stream has no embedded duration
+// metadata (e.g. mp4 HTTP streams).
+func (p *Player) SetDuration(seconds float64) {
+	p.muInfo.Lock()
+	p.hintDuration = seconds
+	p.muInfo.Unlock()
 }
 
 // Seek jumps to the given absolute position in seconds without interrupting
