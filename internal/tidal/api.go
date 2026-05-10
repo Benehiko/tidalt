@@ -187,7 +187,13 @@ func (c *Client) Search(ctx context.Context, query string) ([]Track, error) {
 	return res.Tracks.Items, nil
 }
 
-func (c *Client) GetStreamURL(ctx context.Context, trackID int) (string, error) {
+// StreamInfo carries the resolved stream URL and its detected format extension.
+type StreamInfo struct {
+	URL string
+	Ext string // e.g. "flac", "mp4", "m4a"
+}
+
+func (c *Client) GetStreamURL(ctx context.Context, trackID int) (StreamInfo, error) {
 	qualities := []string{"HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"}
 	var lastErr error
 
@@ -203,39 +209,38 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int) (string, error) 
 		u := BaseURL + endpoint + "?" + params.Encode()
 		resp, err := client.Get(u)
 		if err != nil {
-			return "", err
+			return StreamInfo{}, err
 		}
 		defer func() { _ = resp.Body.Close() }()
 
-		if resp.StatusCode == 200 {
-			var s StreamResponse
-			if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
-				return "", err
-			}
-			if len(s.URLs) == 0 {
-				lastErr = fmt.Errorf("get stream (%s): response contained no URLs", q)
-				continue
-			}
-			// Tidal may return AAC/MP4 even for lossless quality tiers when the
-			// track is not available in FLAC. Only accept FLAC streams.
-			streamURL := s.URLs[0]
-			base := strings.SplitN(streamURL, "?", 2)[0]
-			if !strings.HasSuffix(strings.ToLower(base), ".flac") {
-				ext := base[strings.LastIndex(base, ".")+1:]
-				lastErr = fmt.Errorf("get stream (%s): non-FLAC format (%s)", q, ext)
-				continue
-			}
-			return streamURL, nil
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			lastErr = apiErr("get stream ("+q+")", resp.StatusCode, body)
+			continue
 		}
 
-		body, _ := io.ReadAll(resp.Body)
-		lastErr = apiErr("get stream ("+q+")", resp.StatusCode, body)
+		var s StreamResponse
+		if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+			return StreamInfo{}, err
+		}
+		if len(s.URLs) == 0 {
+			lastErr = fmt.Errorf("get stream (%s): response contained no URLs", q)
+			continue
+		}
+
+		streamURL := s.URLs[0]
+		base := strings.SplitN(streamURL, "?", 2)[0]
+		ext := ""
+		if i := strings.LastIndex(base, "."); i >= 0 {
+			ext = strings.ToLower(base[i+1:])
+		}
+		return StreamInfo{URL: streamURL, Ext: ext}, nil
 	}
 
 	if lastErr != nil {
-		return "", fmt.Errorf("no FLAC stream available for track %d: %w", trackID, lastErr)
+		return StreamInfo{}, fmt.Errorf("no stream available for track %d: %w", trackID, lastErr)
 	}
-	return "", fmt.Errorf("no FLAC stream available for track %d", trackID)
+	return StreamInfo{}, fmt.Errorf("no stream available for track %d", trackID)
 }
 
 func (c *Client) GetFavorites(ctx context.Context, limit int) ([]Track, error) {

@@ -193,12 +193,15 @@ func TestGetStreamURL_FirstQualitySucceeds(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	u, err := newTestClient(srv).GetStreamURL(context.Background(), 123)
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u != "https://cdn.tidal.com/stream.flac" {
-		t.Errorf("unexpected URL: %s", u)
+	if info.URL != "https://cdn.tidal.com/stream.flac" {
+		t.Errorf("unexpected URL: %s", info.URL)
+	}
+	if info.Ext != "flac" {
+		t.Errorf("unexpected ext: %s", info.Ext)
 	}
 }
 
@@ -215,12 +218,12 @@ func TestGetStreamURL_FallsBackThroughQualities(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	u, err := newTestClient(srv).GetStreamURL(context.Background(), 123)
+	info, err := newTestClient(srv).GetStreamURL(context.Background(), 123)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u != "https://cdn.tidal.com/lossless.flac" {
-		t.Errorf("unexpected URL: %s", u)
+	if info.URL != "https://cdn.tidal.com/lossless.flac" {
+		t.Errorf("unexpected URL: %s", info.URL)
 	}
 	if len(seen) < 2 || seen[0] != "HI_RES_LOSSLESS" || seen[1] != "LOSSLESS" {
 		t.Errorf("unexpected quality ladder: %v", seen)
