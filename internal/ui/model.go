@@ -406,6 +406,11 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 	m.skipGen++
 	m.advancing = true // suppresses any stale trackDoneMsg until nowPlayingMsg resets it
 	m.restorePosition = 0
+	m.currPos = 0
+	if track.Duration > 0 {
+		m.duration = float64(track.Duration)
+		m.player.SetDuration(float64(track.Duration))
+	}
 	_ = m.store.SaveLastTrackID(track.ID)
 	gen := m.skipGen
 	ctx := m.ctx
@@ -437,9 +442,6 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 		if err != nil {
 			logger.L.Error("playFn failed", "trackID", track.ID, "err", err)
 			return errMsg(err)
-		}
-		if track.Duration > 0 {
-			m.player.SetDuration(float64(track.Duration))
 		}
 
 		res := <-freshCh
