@@ -277,6 +277,12 @@ type (
 		tracks     []tidal.Track
 		startIndex int
 	}
+	// playNextMsg is sent after a short delay when auto-advancing past a track
+	// that failed to stream, to avoid hammering the API.
+	playNextMsg struct {
+		track tidal.Track
+		gen   uint64
+	}
 )
 
 // applyShuffle reorders m.tracks according to the current shuffle mode and
@@ -421,14 +427,13 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 			freshCh <- freshResult{&track, nil}
 		}
 
-		url, err := client.GetStreamURL(ctx, track.ID)
+		info, err := client.GetStreamURL(ctx, track.ID)
 		if err != nil {
-			// No FLAC stream available — show the error briefly but treat the
-			// track as done so the queue auto-advances to the next track.
 			logger.L.Error("GetStreamURL failed", "trackID", track.ID, "err", err)
 			return skipErrMsg{err: err, gen: gen}
 		}
-		done, err := playFn(url)
+		logger.L.Info("stream resolved", "trackID", track.ID, "ext", info.Ext)
+		done, err := playFn(info.URL)
 		if err != nil {
 			logger.L.Error("playFn failed", "trackID", track.ID, "err", err)
 			return errMsg(err)
@@ -1127,14 +1132,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currPos = 0
 			m.duration = 0
 			_ = m.store.CacheTrack(track.ID, track)
+			// Delay before retrying to avoid hammering the API when many
+			// consecutive tracks fail (e.g. during rate-limiting).
 			return m, tea.Batch(
-				m.playNextTrackCmd(track),
+				tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+					return playNextMsg{track: track, gen: m.skipGen}
+				}),
 				tea.Tick(5*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }),
 			)
 		}
 		m.isPlaying = false
 		m.pushState()
 		return m, tea.Tick(5*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+
+	case playNextMsg:
+		if msg.gen != m.skipGen {
+			break // stale — a newer skip superseded this delayed advance
+		}
+		return m, m.playNextTrackCmd(msg.track)
 
 	case trackDoneMsg:
 		if msg.gen != m.skipGen {
