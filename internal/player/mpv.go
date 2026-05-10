@@ -57,8 +57,9 @@ static int open_hw_pcm(const char *device,
         snd_pcm_format_t fmt24[] = {SND_PCM_FORMAT_S24_3LE,
                                     SND_PCM_FORMAT_S24_LE,
                                     SND_PCM_FORMAT_S32_LE};
-        snd_pcm_format_t *fmts   = (bits == 16) ? fmt16 : fmt24;
-        int               nfmts  = (bits == 16) ? 4      : 3;
+        snd_pcm_format_t fmt32[] = {SND_PCM_FORMAT_S32_LE};
+        snd_pcm_format_t *fmts   = (bits == 16) ? fmt16 : (bits == 24) ? fmt24 : fmt32;
+        int               nfmts  = (bits == 16) ? 4      : (bits == 24) ? 3     : 1;
         snd_pcm_format_t  chosen = SND_PCM_FORMAT_UNKNOWN;
 
         for (int i = 0; i < nfmts; i++) {
@@ -134,10 +135,8 @@ import "C"
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"math"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -148,7 +147,6 @@ import (
 	"github.com/Benehiko/tidalt/v3/internal/logger"
 
 	"github.com/godbus/dbus/v5"
-	"github.com/mewkiz/flac"
 )
 
 // knownDACs lists substrings to search for in /proc/asound/cards output.
@@ -563,25 +561,6 @@ func (p *Player) PlayNext(url string) (<-chan struct{}, error) {
 	return newDone, nil
 }
 
-// openStream fetches the FLAC HTTP stream and returns the response and decoder.
-// The caller is responsible for closing resp.Body.
-func openStream(ctx context.Context, url string) (*http.Response, *flac.Stream, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, nil, err
-	}
-	stream, err := flac.New(resp.Body)
-	if err != nil {
-		_ = resp.Body.Close()
-		return nil, nil, err
-	}
-	return resp, stream, nil
-}
-
 // closeALSA drains and closes an ALSA handle.
 func closeALSA(ah *alsaHandle) {
 	C.snd_pcm_drain(ah.pcm)
@@ -620,7 +599,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 	channels := info.NChannels
 	bits := info.BitsPerSample
 
-	logger.L.Debug("FLAC stream",
+	logger.L.Debug("audio stream",
 		"rate", sampleRate,
 		"channels", channels,
 		"bits", bits,
@@ -708,11 +687,12 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 					return
 				default:
 				}
-				frame, ferr := stream.ParseNext()
+				samples, ferr := stream.ReadSamples()
 				if ferr != nil {
 					return
 				}
-				skipped += uint64(frame.BlockSize)
+				n := len(samples) / int(channels)
+				skipped += uint64(n)
 			}
 			atomic.StoreUint64(&p.samplesPlayed, skipped)
 
@@ -724,36 +704,24 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 					return
 				default:
 				}
-				frame, ferr := stream.ParseNext()
+				samples, ferr := stream.ReadSamples()
 				if ferr != nil {
-					logger.L.Debug("FLAC decode done", "err", ferr)
+					logger.L.Debug("audio decode done", "err", ferr)
 					return
 				}
-				n := int(frame.BlockSize)
-				buf := make([]byte, n*int(channels)*bps)
+				n := len(samples) / int(channels)
+				buf := make([]byte, len(samples)*bps)
 				vol := math.Float64frombits(atomic.LoadUint64(&p.volumeBits))
-				for i := 0; i < n; i++ {
-					for ch := 0; ch < int(channels); ch++ {
-						s := frame.Subframes[ch].Samples[i]
-						if vol != 1.0 {
-							s = int32(float64(s) * vol)
-						}
-						off := (i*int(channels) + ch) * bps
-						switch ah.format {
-						case C.SND_PCM_FORMAT_S16_LE:
-							binary.LittleEndian.PutUint16(buf[off:], uint16(int16(s)))
-						case C.SND_PCM_FORMAT_S24_3LE:
-							buf[off] = byte(s)
-							buf[off+1] = byte(s >> 8)
-							buf[off+2] = byte(s >> 16)
-						case C.SND_PCM_FORMAT_S24_LE:
-							shift := uint(ah.significantBits - int(bits))
-							binary.LittleEndian.PutUint32(buf[off:], uint32(int32(s)<<shift))
-						case C.SND_PCM_FORMAT_S32_LE:
-							shift := uint(ah.significantBits - int(bits))
-							binary.LittleEndian.PutUint32(buf[off:], uint32(int32(s)<<shift))
-						}
+				for i, s := range samples {
+					if vol != 1.0 {
+						s = int32(float64(s) * vol)
 					}
+					off := i * bps
+					// avcodec always outputs S32LE; ALSA is opened as S32LE (bits=32).
+					buf[off] = byte(s)
+					buf[off+1] = byte(s >> 8)
+					buf[off+2] = byte(s >> 16)
+					buf[off+3] = byte(s >> 24)
 				}
 				select {
 				case pcmCh <- pcmBuf{data: buf, nFrames: n}:
@@ -889,6 +857,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			// Re-open the HTTP stream and skip to the seek target.
 			// samplesPlayed is NOT reset here — streamLoop sets it after skipping,
 			// so GetPosition() never briefly returns 0 between seeks.
+			stream.Close()
 			_ = resp.Body.Close()
 
 			resp, stream, err = openStream(ctx, url)
@@ -900,6 +869,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			seekTarget, doSeek, aborted = streamLoop(seekTarget)
 		}
 
+		stream.Close()
 		_ = resp.Body.Close()
 
 		// If the stream loop aborted due to an unrecoverable error (e.g. ALSA
@@ -925,6 +895,8 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			logger.L.Debug("transitioning to next track")
 			url = nextURL
 
+			stream.Close()
+			_ = resp.Body.Close()
 			resp, stream, err = openStream(ctx, nextURL)
 			if err != nil {
 				logger.L.Error("failed to open next stream", "err", err)
@@ -990,7 +962,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			p.currentURL = nextURL
 			p.mu.Unlock()
 
-			logger.L.Debug("FLAC stream (next track)",
+			logger.L.Debug("audio stream (next track)",
 				"rate", sampleRate,
 				"channels", channels,
 				"bits", bits,
