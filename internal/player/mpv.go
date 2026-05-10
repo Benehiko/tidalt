@@ -469,7 +469,6 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 	atomic.StoreUint32(&p.paused, 0)
 	p.muInfo.Lock()
 	p.totalSamples = 0
-	p.hintDuration = 0
 	p.muInfo.Unlock()
 	// Drain any pending seek/next-URL so the new track starts cleanly.
 	select {
