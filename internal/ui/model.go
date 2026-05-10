@@ -439,6 +439,7 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 			logger.L.Error("playFn failed", "trackID", track.ID, "err", err)
 			return errMsg(err)
 		}
+		logger.L.Debug("doPlayTrack: playFn returned, calling SetDuration", "trackID", track.ID, "trackDuration", track.Duration)
 		if track.Duration > 0 {
 			m.player.SetDuration(float64(track.Duration))
 		}
@@ -1047,6 +1048,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.currentTrack != nil && m.currentTrack.Duration > 0 {
 			m.duration = float64(m.currentTrack.Duration)
 		}
+		logger.L.Debug("nowPlayingMsg: seeded progress",
+			"trackID", func() int {
+				if m.currentTrack != nil {
+					return m.currentTrack.ID
+				}
+				return 0
+			}(),
+			"currPos", m.currPos,
+			"duration", m.duration,
+			"restorePosition", m.restorePosition,
+		)
 		m.pushState()
 		if m.restorePosition > 0 {
 			pos := m.restorePosition
@@ -1071,6 +1083,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.isPlaying && !m.clientMode {
 			m.currPos, _ = m.player.GetPosition()
 			m.duration, _ = m.player.GetDuration()
+			logger.L.Debug("tick: progress state",
+				"currPos", m.currPos,
+				"duration", m.duration,
+				"isPlaying", m.isPlaying,
+			)
 			_ = m.store.SaveLastPosition(m.currPos)
 			m.pushState()
 		}

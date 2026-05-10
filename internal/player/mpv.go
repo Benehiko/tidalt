@@ -955,6 +955,9 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			p.channels = channels
 			p.bitsPerSample = bits
 			p.totalSamples = newInfo.NSamples
+			if newInfo.NSamples > 0 {
+				p.hintDuration = 0
+			}
 			p.muInfo.Unlock()
 
 			atomic.StoreUint64(&p.samplesPlayed, 0)
@@ -1011,10 +1014,14 @@ func (p *Player) GetPosition() (float64, error) {
 	p.muInfo.RLock()
 	sr := p.sampleRate
 	p.muInfo.RUnlock()
+	sp := atomic.LoadUint64(&p.samplesPlayed)
 	if sr == 0 {
+		logger.L.Debug("GetPosition: sampleRate=0, returning 0", "samplesPlayed", sp)
 		return 0, nil
 	}
-	return float64(atomic.LoadUint64(&p.samplesPlayed)) / float64(sr), nil
+	pos := float64(sp) / float64(sr)
+	logger.L.Debug("GetPosition", "samplesPlayed", sp, "sampleRate", sr, "pos", pos)
+	return pos, nil
 }
 
 func (p *Player) GetDuration() (float64, error) {
@@ -1024,11 +1031,15 @@ func (p *Player) GetDuration() (float64, error) {
 	hint := p.hintDuration
 	p.muInfo.RUnlock()
 	if ts > 0 && sr > 0 {
-		return float64(ts) / float64(sr), nil
+		dur := float64(ts) / float64(sr)
+		logger.L.Debug("GetDuration: from totalSamples", "totalSamples", ts, "sampleRate", sr, "dur", dur)
+		return dur, nil
 	}
 	if hint > 0 {
+		logger.L.Debug("GetDuration: from hintDuration", "hint", hint)
 		return hint, nil
 	}
+	logger.L.Debug("GetDuration: no data", "totalSamples", ts, "sampleRate", sr, "hint", hint)
 	return 0, nil
 }
 
@@ -1039,6 +1050,7 @@ func (p *Player) SetDuration(seconds float64) {
 	p.muInfo.Lock()
 	p.hintDuration = seconds
 	p.muInfo.Unlock()
+	logger.L.Debug("SetDuration", "hint", seconds)
 }
 
 // Seek jumps to the given absolute position in seconds without interrupting

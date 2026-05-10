@@ -105,9 +105,12 @@ static int av_open(av_decoder_t *d, void *opaque) {
     d->sample_rate = (uint32_t)d->codec_ctx->sample_rate;
     d->channels    = (uint8_t)d->codec_ctx->ch_layout.nb_channels;
 
-    // Estimate total samples if the stream has duration info.
-    if (st->nb_frames > 0) {
-        d->n_samples = st->nb_frames;
+    // Estimate total samples from stream metadata.
+    // nb_frames is a packet/frame count; multiply by frame_size to get PCM
+    // samples per channel (frame_size is 0 for raw PCM codecs, so fall back
+    // to the duration-based estimate in that case).
+    if (st->nb_frames > 0 && d->codec_ctx->frame_size > 0) {
+        d->n_samples = st->nb_frames * (int64_t)d->codec_ctx->frame_size;
     } else if (st->duration != AV_NOPTS_VALUE && st->time_base.den > 0) {
         d->n_samples = (int64_t)((double)st->duration
                                  * st->time_base.num / st->time_base.den
