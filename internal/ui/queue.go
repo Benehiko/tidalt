@@ -20,6 +20,16 @@ func (m *Model) enqueueNext(t tidal.Track) {
 	_ = m.store.SavePlaylist(m.tracks)
 }
 
+// loadQueueFromPlaylist replaces the live queue with a playlist's tracks. The
+// hybrid-model origin tracking (synced/edited state) is added in the
+// queue-save step; for now it just loads the tracks.
+func (m *Model) loadQueueFromPlaylist(tracks []tidal.Track, _ tidal.Playlist) {
+	m.tracksOrder = tracks
+	m.shuffleMode = ShuffleOff
+	m.applyShuffle()
+	_ = m.store.SavePlaylist(m.tracks)
+}
+
 // insertTrack returns s with t inserted at index i.
 func insertTrack(s []tidal.Track, i int, t tidal.Track) []tidal.Track {
 	s = append(s, tidal.Track{})

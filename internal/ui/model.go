@@ -105,6 +105,16 @@ type Model struct {
 	playlists  []tidal.Playlist
 	favArtists []tidal.Artist
 	favAlbums  []tidal.Album
+	history    []tidal.Track
+
+	// Playlists detail pane: which playlist is open and its tracks. The index
+	// column uses m.cursor; detailCursor indexes the open playlist's tracks and
+	// detailFocus toggles between the index (false) and detail (true) columns.
+	openPlaylist *tidal.Playlist
+	playlistName string
+	detailTracks []tidal.Track
+	detailCursor int
+	detailFocus  bool
 
 	// Terminal size
 	width  int
@@ -763,6 +773,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"restorePosition", m.restorePosition,
 		)
 		m.pushState()
+		if m.currentTrack != nil {
+			m.recordHistory(*m.currentTrack)
+		}
 		if m.restorePosition > 0 {
 			pos := m.restorePosition
 			m.restorePosition = 0
@@ -998,6 +1011,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case mixesMsg:
 		m.mixes = msg
+
+	case playlistsMsg:
+		m.playlists = msg
+
+	case favArtistsMsg:
+		m.favArtists = msg
+
+	case favAlbumsMsg:
+		m.favAlbums = msg
+
+	case playlistDetailMsg:
+		m.detailTracks = msg.tracks
+		m.playlistName = msg.title
+		m.detailCursor = 0
+		m.detailFocus = true
 
 	case artistAlbumsMsg:
 		m.artistID = msg.artistID
@@ -1244,9 +1272,16 @@ func (m *Model) renderMain(t Theme, w, h int) string {
 		return m.renderSearchPane(t, w, h)
 	case SecQueue, SecFavSongs:
 		return m.renderQueuePane(t, w, h)
+	case SecPlaylists:
+		return m.renderPlaylistsPane(t, w, h)
+	case SecFavArtists:
+		return m.renderFavArtistsPane(t, w, h)
+	case SecFavAlbums:
+		return m.renderFavAlbumsPane(t, w, h)
+	case SecHistory:
+		return m.renderHistoryPane(t, w, h)
 	default:
-		// Sections not yet implemented (Playlists, FavArtists, FavAlbums,
-		// History, Settings) render a placeholder until their step lands.
+		// Settings (theme picker) lands in the final step.
 		return renderPanel(t, sectionTitle(m.section), m.focusMain, w, h,
 			t.RowDim.Render("Coming soon."))
 	}
