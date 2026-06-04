@@ -32,7 +32,8 @@ WantedBy=graphical-session.target
 
 // runDaemon starts tidalt in headless daemon mode: full playback engine and
 // MPRIS2 server, but no TUI. Control via client instances or playerctl.
-func runDaemon() {
+// It returns an error so the caller can exit after deferred cleanup runs.
+func runDaemon() error {
 	ctx, stop := signalContext()
 	defer stop()
 
@@ -40,8 +41,7 @@ func runDaemon() {
 
 	mprisServer, mprisErr := mpris.Start(ctx)
 	if errors.Is(mprisErr, mpris.ErrAlreadyRunning) {
-		fmt.Fprintln(os.Stderr, "error: a tidalt instance is already running")
-		os.Exit(1)
+		return errors.New("a tidalt instance is already running")
 	}
 	if mprisErr != nil {
 		fmt.Fprintf(os.Stderr, "MPRIS unavailable: %v\n", mprisErr)
@@ -61,9 +61,9 @@ func runDaemon() {
 		tea.WithInput(nil),
 	)
 	if _, err := p.Run(); err != nil {
-		fmt.Printf("daemon error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("daemon error: %w", err)
 	}
+	return nil
 }
 
 // runSetupDaemon installs a systemd --user service unit for tidalt, then
@@ -71,33 +71,34 @@ func runDaemon() {
 func runSetupDaemon() {
 	self, err := os.Executable()
 	if err != nil {
-		fatal("cannot determine executable path: %v", err)
+		fatalf("cannot determine executable path: %v", err)
 	}
 
 	unitDir := filepath.Join(homeDir(), ".config", "systemd", "user")
-	step("Creating directory %s", unitDir)
-	if err := os.MkdirAll(unitDir, 0o755); err != nil {
-		fatal("mkdir %s: %v", unitDir, err)
+	stepf("Creating directory %s", unitDir)
+	if err := os.MkdirAll(unitDir, 0o700); err != nil {
+		fatalf("mkdir %s: %v", unitDir, err)
 	}
 
 	unitPath := filepath.Join(unitDir, "tidalt.service")
-	step("Writing %s", unitPath)
+	stepf("Writing %s", unitPath)
 
 	tmpl, err := template.New("unit").Parse(serviceTemplate)
 	if err != nil {
-		fatal("internal error: bad service template: %v", err)
+		fatalf("internal error: bad service template: %v", err)
 	}
 
-	f, err := os.OpenFile(unitPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	//nolint:gosec // G304: unitPath is a fixed filename under the user's own ~/.config/systemd/user dir, not attacker-controlled
+	f, err := os.OpenFile(unitPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		fatal("create %s: %v", unitPath, err)
+		fatalf("create %s: %v", unitPath, err)
 	}
 	if execErr := tmpl.Execute(f, struct{ Exec string }{Exec: self}); execErr != nil {
 		_ = f.Close()
-		fatal("write %s: %v", unitPath, execErr)
+		fatalf("write %s: %v", unitPath, execErr)
 	}
 	if err := f.Close(); err != nil {
-		fatal("close %s: %v", unitPath, err)
+		fatalf("close %s: %v", unitPath, err)
 	}
 
 	run(false, "systemctl", "--user", "daemon-reload")

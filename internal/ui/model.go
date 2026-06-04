@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"math/rand/v2"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,7 +53,9 @@ const (
 	StateArtistAlbums // list of an artist's albums + synthetic quick-play entries
 )
 
+//nolint:recvcheck // tea.Model requires value-receiver Init/Update/View; helper methods mutate via pointer receiver
 type Model struct {
+	//nolint:containedctx // the long-lived TUI model holds the app context for command goroutines
 	ctx    context.Context
 	client *tidal.Client
 	store  *store.SecretsStore
@@ -362,7 +365,7 @@ func (m *Model) nextIndex() int {
 		if len(candidates) == 0 {
 			return -1
 		}
-		return candidates[rand.IntN(len(candidates))]
+		return candidates[rand.IntN(len(candidates))] //nolint:gosec // G404: playlist shuffle does not need crypto-grade randomness
 	default:
 		// ShuffleOff and ShuffleFisherYates both advance linearly through
 		// the (possibly pre-shuffled) slice.
@@ -394,8 +397,8 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 		if m.localPlaylist && len(m.tracks) > 0 {
 			// Find the index of this track in the local playlist.
 			idx := 0
-			for i, t := range m.tracks {
-				if t.ID == track.ID {
+			for i := range m.tracks {
+				if m.tracks[i].ID == track.ID {
 					idx = i
 					break
 				}
@@ -437,7 +440,7 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 		freshCh := make(chan freshResult, 1)
 		if track.Album.Cover == "" {
 			go func() {
-				t, err := client.GetTrack(ctx, fmt.Sprintf("%d", track.ID))
+				t, err := client.GetTrack(ctx, strconv.Itoa(track.ID))
 				freshCh <- freshResult{t, err}
 			}()
 		} else {
@@ -492,8 +495,8 @@ func resolveQuery(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 	// tidal://track/12345  →  tidal.com/track/12345
 	// tidal://album/67890  →  tidal.com/album/67890
 	// tidal://mix/abcdef   →  tidal.com/mix/abcdef
-	if strings.HasPrefix(query, "tidal://") {
-		query = "tidal.com/" + strings.TrimPrefix(query, "tidal://")
+	if after, ok := strings.CutPrefix(query, "tidal://"); ok {
+		query = "tidal.com/" + after
 	}
 
 	if strings.Contains(query, "tidal.com/") && strings.Contains(query, "/track/") {
@@ -698,17 +701,8 @@ func (m *Model) regenKittyRows() {
 	if m.state == StateArtistAlbums {
 		overhead++ // extra "Artist: <name>" footer line
 	}
-	listHeight := m.height - overhead
-	if listHeight < 1 {
-		listHeight = 1
-	}
-	imgRows := listHeight - 4
-	if imgRows < 2 {
-		imgRows = 2
-	}
-	if imgRows > listHeight {
-		imgRows = listHeight
-	}
+	listHeight := max(m.height-overhead, 1)
+	imgRows := min(max(listHeight-4, 2), listHeight)
 	m.kittyRows = kittyRowSequences(m.coverImage, panelW, imgRows)
 }
 
@@ -749,6 +743,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case StateArtistAlbums:
 				// Return to wherever "a" was pressed, keeping the cursor there.
 				m.state = m.prevState
+			default:
+				// other states: Esc has no effect
 			}
 
 		case "d":
@@ -825,7 +821,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == StateSearch && len(m.searchTracks) > 0 {
 				track := m.searchTracks[m.searchCursor]
 				_ = m.store.CacheTrack(track.ID, track)
-				return m, m.playTrackCmd(track)
+				cmd := m.playTrackCmd(track)
+				return m, cmd
 			}
 			if m.state == StateMixes && len(m.mixes) > 0 {
 				mix := m.mixes[m.cursor]
@@ -862,7 +859,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				default:
 					if idx := m.artistCursor - 2; idx >= 0 && idx < len(m.artistAlbums) {
-						albumID := fmt.Sprintf("%d", m.artistAlbums[idx].ID)
+						albumID := strconv.Itoa(m.artistAlbums[idx].ID)
 						return m, func() tea.Msg {
 							tracks, err := m.client.GetAlbumTracks(m.ctx, albumID)
 							if err != nil {
@@ -876,7 +873,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(m.tracks) > 0 {
 				track := m.tracks[m.cursor]
 				_ = m.store.CacheTrack(track.ID, track)
-				return m, m.playTrackCmd(track)
+				cmd := m.playTrackCmd(track)
+				return m, cmd
 			}
 
 		case "left":
@@ -922,14 +920,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.artistCursor++
 				}
 			default:
-				max := len(m.tracks)
+				maxIdx := len(m.tracks)
 				switch m.state {
 				case StateMixes:
-					max = len(m.mixes)
+					maxIdx = len(m.mixes)
 				case StateDeviceSelect:
-					max = len(m.devices)
+					maxIdx = len(m.devices)
+				default:
+					// other states: count tracks (default above)
 				}
-				if m.cursor < max-1 {
+				if m.cursor < maxIdx-1 {
 					m.cursor++
 				}
 			}
@@ -962,7 +962,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if track != nil {
 					_ = m.store.CacheTrack(track.ID, *track)
-					return m, m.playTrackCmd(*track)
+					cmd := m.playTrackCmd(*track)
+					return m, cmd
 				}
 			} else {
 				_ = m.player.Pause()
@@ -1032,7 +1033,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.currPos = 0
 					m.duration = 0
 					_ = m.store.CacheTrack(track.ID, track)
-					return m, m.playNextTrackCmd(track)
+					cmd := m.playNextTrackCmd(track)
+					return m, cmd
 				}
 			}
 
@@ -1046,7 +1048,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.currPos = 0
 					m.duration = 0
 					_ = m.store.CacheTrack(track.ID, track)
-					return m, m.playTrackCmd(track)
+					cmd := m.playTrackCmd(track)
+					return m, cmd
 				}
 			}
 
@@ -1120,10 +1123,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		// Reserve space for the "  [MM:SS / MM:SS]" suffix (18 chars) plus indent (2) plus margin.
-		barWidth := msg.Width - 22
-		if barWidth < 10 {
-			barWidth = 10
-		}
+		barWidth := max(msg.Width-22, 10)
 		m.progress = progress.New(progress.WithDefaultGradient(), progress.WithWidth(barWidth))
 		m.regenKittyRows()
 
@@ -1278,7 +1278,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.skipGen {
 			break // stale — a newer skip superseded this delayed advance
 		}
-		return m, m.playNextTrackCmd(msg.track)
+		cmd := m.playNextTrackCmd(msg.track)
+		return m, cmd
 
 	case trackDoneMsg:
 		if msg.gen != m.skipGen {
@@ -1294,7 +1295,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currPos = 0
 				m.duration = 0
 				_ = m.store.CacheTrack(track.ID, track)
-				return m, m.playNextTrackCmd(track)
+				cmd := m.playNextTrackCmd(track)
+				return m, cmd
 			}
 			m.isPlaying = false
 			m.pushState()
@@ -1306,8 +1308,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyShuffle()
 			m.playlistRestored = true
 			if lastID, err := m.store.LoadLastTrackID(); err == nil && lastID != 0 {
-				for i, t := range m.tracks {
-					if t.ID == lastID {
+				for i := range m.tracks {
+					if m.tracks[i].ID == lastID {
 						m.cursor = i
 						break
 					}
@@ -1322,8 +1324,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case favoritesLoadedMsg:
 		tracks := []tidal.Track(msg)
 		// Always update the favorites map so ♥ indicators work.
-		for _, t := range tracks {
-			m.favorites[t.ID] = true
+		for i := range tracks {
+			m.favorites[tracks[i].ID] = true
 		}
 		// Only replace the track list with favorites when no playlist was
 		// restored from cache — otherwise we'd clobber the user's last session.
@@ -1381,7 +1383,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Auto-play the first track.
 		track := m.tracks[0]
 		_ = m.store.CacheTrack(track.ID, track)
-		return m, m.playTrackCmd(track)
+		cmd := m.playTrackCmd(track)
+		return m, cmd
 
 	case mixesMsg:
 		m.mixes = msg
@@ -1418,7 +1421,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_ = m.store.SavePlaylist(m.tracks)
 		track := m.tracks[idx]
 		_ = m.store.CacheTrack(track.ID, track)
-		return m, m.playTrackCmd(track)
+		cmd := m.playTrackCmd(track)
+		return m, cmd
 
 	case mprisMsg:
 		ev := mpris.Event(msg)
@@ -1459,7 +1463,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			trackID := ev.TrackID
 			return m, tea.Batch(
 				func() tea.Msg {
-					track, err := m.client.GetTrack(m.ctx, fmt.Sprintf("%d", trackID))
+					track, err := m.client.GetTrack(m.ctx, strconv.Itoa(trackID))
 					if err != nil {
 						return errMsg(err)
 					}
@@ -1511,17 +1515,11 @@ func visibleWindow(cursor, total, height int) (start, end int) {
 	if total == 0 {
 		return 0, 0
 	}
-	start = cursor - height/2
-	if start < 0 {
-		start = 0
-	}
+	start = max(cursor-height/2, 0)
 	end = start + height
 	if end > total {
 		end = total
-		start = end - height
-		if start < 0 {
-			start = 0
-		}
+		start = max(end-height, 0)
 	}
 	return start, end
 }
@@ -1587,7 +1585,7 @@ func updateBars(frame int, heights, targets *[numBars]int, isPlaying bool) {
 	// Re-randomise targets on a staggered schedule so bars don't all move together.
 	for b := range targets {
 		if (frame+b*3)%retargetIn == 0 {
-			targets[b] = barMin + rand.IntN(barMax-barMin+1)
+			targets[b] = barMin + rand.IntN(barMax-barMin+1) //nolint:gosec // G404: equaliser bar animation does not need crypto-grade randomness
 		}
 	}
 
@@ -1609,10 +1607,10 @@ func musicBars(frame int, heights [numBars]int, palette []lipgloss.Color, isPlay
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 	var rows [numRows]string
-	for row := 0; row < numRows; row++ {
+	for row := range numRows {
 		var sb strings.Builder
 		sb.WriteString("  ") // gap between logo and bars
-		for b := 0; b < numBars; b++ {
+		for b := range numBars {
 			h := (heights[b] + barScale - 1) / barScale // ceil-divide back to rows
 			if !isPlaying {
 				sb.WriteString(dimStyle.Render("▁"))
@@ -1723,13 +1721,15 @@ func (m Model) View() string {
 
 	// Tabs
 	tabs := []string{"My Music", "Daily Mixes", "Search"}
+	var sSb1726 strings.Builder
 	for i, t := range tabs {
 		if int(m.state) == i {
-			s += activeTab.Render(t) + " "
+			sSb1726.WriteString(activeTab.Render(t) + " ")
 		} else {
-			s += inactiveTab.Render(t) + " "
+			sSb1726.WriteString(inactiveTab.Render(t) + " ")
 		}
 	}
+	s += sSb1726.String()
 	s += "\n\n"
 
 	// List Content
@@ -1745,10 +1745,7 @@ func (m Model) View() string {
 	if m.state == StateArtistAlbums {
 		overhead++ // extra "Artist: <name>" footer line
 	}
-	listHeight := m.height - overhead
-	if listHeight < 1 {
-		listHeight = 1
-	}
+	listHeight := max(m.height-overhead, 1)
 
 	// Panel: 36 columns for cover art, centered in the right half of the
 	// terminal. The list takes the left half; the remaining space is split as
@@ -1760,10 +1757,7 @@ func (m Model) View() string {
 		// Right zone = everything to the right of the list.
 		rightZone := m.width / 2
 		listW = m.width - rightZone
-		gutterL = (rightZone - panelW) / 2
-		if gutterL < 1 {
-			gutterL = 1
-		}
+		gutterL = max((rightZone-panelW)/2, 1)
 	}
 
 	var listLines []string
@@ -1910,7 +1904,8 @@ func (m Model) View() string {
 		panel := coverPanelLines(m.coverImage, title, artist, album, panelW, listHeight, m.kittyRows)
 		gutter := strings.Repeat(" ", gutterL)
 
-		for i := 0; i < listHeight; i++ {
+		var sSb1913 strings.Builder
+		for i := range listHeight {
 			l := ""
 			if i < len(listLines) {
 				l = listLines[i]
@@ -1921,16 +1916,16 @@ func (m Model) View() string {
 			}
 			// Pad list column to listW so the panel always starts at a fixed column.
 			lRunes := []rune(stripANSI(l))
-			pad := listW - len(lRunes)
-			if pad < 0 {
-				pad = 0
-			}
-			s += l + strings.Repeat(" ", pad) + gutter + r + "\n"
+			pad := max(listW-len(lRunes), 0)
+			sSb1913.WriteString(l + strings.Repeat(" ", pad) + gutter + r + "\n")
 		}
+		s += sSb1913.String()
 	} else {
+		var sSb1931 strings.Builder
 		for _, line := range listLines {
-			s += line + "\n"
+			sSb1931.WriteString(line + "\n")
 		}
+		s += sSb1931.String()
 	}
 
 	s += footer

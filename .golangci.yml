@@ -6,17 +6,106 @@ run:
   go: '1.26'
 
 linters:
-  default: none
-  enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-    - revive
+  # Start from everything golangci-lint offers, then turn off the linters that
+  # are noisy, opinionated, or irrelevant to this project. Everything not listed
+  # under `disable` is therefore ON.
+  default: all
+  disable:
+    # ── Style / opinion: too noisy for this codebase ──────────────────────────
+    - wsl_v5            # forces empty-line placement everywhere
+    - wsl               # deprecated alias of wsl_v5; same noise
+    - nlreturn          # demands a blank line before every return
+    - lll               # long-line limit — clashes with long format strings
+    - noinlineerr       # forbids `if err := f(); err != nil` — core Go idiom
+    - forbidigo         # forbids fmt.Print* — this is a CLI with real stdout output
+    - nonamedreturns    # named returns are used deliberately here
+    - varnamelen        # rejects short names like i, r, db, ok
+    - godox             # flags every TODO/FIXME comment
+    - godot             # comments must end in a period
+    - godoclint         # opinionated godoc formatting rules
+    - dupword           # false positives on legitimate repeated words
+    - tagliatelle       # opinionated struct-tag casing (API JSON tags fixed)
+    - decorder          # enforces declaration order within a file
+    - funcorder         # enforces method/constructor ordering
+    - grouper           # enforces import/const grouping style
+
+    # ── Complexity gates: would require large refactors of existing code ──────
+    - funlen
+    - cyclop
+    - gocyclo
+    - gocognit
+    - maintidx
+    - nestif
+    - interfacebloat
+
+    # ── Dependency / import policing: nothing to enforce here ─────────────────
+    - depguard
+    - gomodguard
+    - importas
+
+    # ── Magic-number / global policing: false-positive heavy in a TUI/CLI ─────
+    - mnd               # the player + UI use many literal constants
+    - gochecknoglobals  # styles, lipgloss vars, etc. are package globals
+    - gochecknoinits
+
+    # ── Error-string strictness: too aggressive for an app (vs a library) ─────
+    - err113            # forbids dynamic fmt.Errorf error values
+    - wrapcheck         # demands every external error be wrapped
+    - ireturn           # "return concrete types" — clashes with bubbletea
+
+    # ── Initialise-every-field: impractical for large 3rd-party structs ───────
+    - exhaustruct
+
+    # ── Test-only opinions: this project has few/no parallel tests yet ────────
+    - paralleltest
+    - tparallel
+    - testpackage
+    - thelper
+
+    # ── Domain-specific linters for stacks we don't use ───────────────────────
+    - sqlclosecheck
+    - rowserrcheck
+    - unqueryvet
+    - promlinter
+    - zerologlint
+    - loggercheck
+    - sloglint
+    - ginkgolinter
+    - testifylint
+    - protogetter
+    - musttag
+    - gosmopolitan
+    - arangolint
+
   settings:
     revive:
       severity: warning
+    exhaustive:
+      # bubbletea Update/View switches intentionally use a default: arm rather
+      # than spelling out every State / ShuffleMode case.
+      default-signifies-exhaustive: true
+    gosec:
+      excludes:
+        - G115  # integer overflow on conversion — pervasive in audio/PCM math
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        - ifElseChain
+        - hugeParam
+    nakedret:
+      max-func-lines: 30
+
+  exclusions:
+    rules:
+      # gocritic's dupSubExpr misfires on cgo-generated comparisons in the
+      # CGO-heavy player package (C.x == C.x in expanded macros).
+      - path: internal/player/
+        linters:
+          - gocritic
+        text: 'dupSubExpr'
 
 formatters:
   enable:

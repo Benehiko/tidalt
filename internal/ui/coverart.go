@@ -11,12 +11,12 @@ import (
 
 // fetchCoverImage downloads the image at url and decodes it.
 func fetchCoverImage(url string) (image.Image, error) {
-	resp, err := http.Get(url) //nolint:noctx
+	resp, err := http.Get(url) //nolint:noctx,gosec // G107: cover art URL comes from the authenticated Tidal API response
 	if err != nil {
 		return nil, fmt.Errorf("cover http: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("cover fetch: status %d", resp.StatusCode)
 	}
 	img, format, err := image.Decode(resp.Body)
@@ -42,8 +42,8 @@ func renderBlockArt(img image.Image, cols, rows int) string {
 	pixRows := rows * 2
 
 	var sb strings.Builder
-	for row := 0; row < rows; row++ {
-		for col := 0; col < cols; col++ {
+	for row := range rows {
+		for col := range cols {
 			pxL := col * 2 * imgW / pixCols
 			pxR := (col*2 + 1) * imgW / pixCols
 			pyT := row * 2 * imgH / pixRows
@@ -184,13 +184,7 @@ func coverPanelLines(img image.Image, title, artist, album string, w, h int, kit
 
 	// Reserve 1 blank + 3 text lines below the image; clamp so imgRows never
 	// exceeds h (which can be as small as 1 after a terminal resize).
-	imgRows := h - 4
-	if imgRows < 2 {
-		imgRows = 2
-	}
-	if imgRows > h {
-		imgRows = h
-	}
+	imgRows := min(max(h-4, 2), h)
 
 	if len(kittyRows) > 0 {
 		// Kitty path: use pre-generated per-row sequences for the art area.

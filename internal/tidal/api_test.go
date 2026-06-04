@@ -52,7 +52,10 @@ func newTestClient(srv *httptest.Server) *tidal.Client {
 func respond(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }
 
 // --- GetUser ---
@@ -311,8 +314,14 @@ func TestGetMixes_OK(t *testing.T) {
 	pl2.Attributes.Name = "Chill Mix"
 	pl2.Attributes.Description = "Relaxing vibes"
 
-	inc1, _ := json.Marshal(pl1)
-	inc2, _ := json.Marshal(pl2)
+	inc1, err := json.Marshal(pl1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inc2, err := json.Marshal(pl2)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	payload := map[string]any{
 		"data": []map[string]string{
@@ -403,7 +412,7 @@ func TestGetMixTracks_OK(t *testing.T) {
 			respond(w, 200, track2)
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
-			w.WriteHeader(404)
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer srv.Close()
@@ -453,7 +462,7 @@ func TestGetMixTracks_PreservesPlaylistOrder(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/tracks/202"):
 			respond(w, 200, track2)
 		default:
-			w.WriteHeader(404)
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer srv.Close()
@@ -492,7 +501,7 @@ func TestGetMixTracks_SkipsUnavailableTracks(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/tracks/999"):
 			respond(w, 404, map[string]string{"error": "not found"})
 		default:
-			w.WriteHeader(404)
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer srv.Close()
@@ -524,7 +533,7 @@ func TestGetMixTracks_SkipsNonTrackRefs(t *testing.T) {
 			return
 		}
 		t.Errorf("unexpected request to %s — should not fetch tracks when IDs list is empty", r.URL.Path)
-		w.WriteHeader(500)
+		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 

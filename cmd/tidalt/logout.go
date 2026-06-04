@@ -24,7 +24,7 @@ func runLogout() {
 	}
 
 	if err := vault.DeleteSession(); err != nil {
-		fatal("logout: %v", err)
+		fatalf("logout: %v", err)
 	}
 	fmt.Println("Logged out. Run `tidalt` to log in again.")
 }

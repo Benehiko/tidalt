@@ -177,7 +177,7 @@ static void av_strerr(int rc, char *buf, int sz) {
     av_strerror(rc, buf, (size_t)sz);
 }
 */
-import "C"
+import "C" //nolint:gocritic // dupImport false positive: cgo "C" pseudo-package aliases unsafe
 
 import (
 	"context"
@@ -187,7 +187,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
-	"unsafe"
+	"unsafe" //nolint:gocritic // dupImport false positive: cgo "C" pseudo-package aliases unsafe
 )
 
 // streamInfo holds the audio parameters of an opened stream.
@@ -277,7 +277,7 @@ func newAvDecoder(r io.Reader) (*avDecoder, error) {
 	// Pass the numeric reader ID as the AVIO opaque pointer.
 	// dec.readerID is a plain integer, not a pointer into Go heap memory,
 	// so this conversion is safe despite the unsafeptr vet warning.
-	rc := C.av_open(&dec.d, unsafe.Pointer(dec.readerID)) //nolint:govet
+	rc := C.av_open(&dec.d, unsafe.Pointer(dec.readerID)) //nolint:govet // readerID is an opaque integer handle, not a Go heap pointer
 	if rc < 0 {
 		unregisterReader(dec.readerID)
 		return nil, avErr("avcodec open", rc)
@@ -324,7 +324,7 @@ func avErr(op string, rc C.int) error {
 // openStream fetches the audio stream at url via HTTP and opens an avcodec
 // decoder for it. The caller must call stream.Close() and resp.Body.Close().
 func openStream(ctx context.Context, url string) (*http.Response, *audioStream, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -332,7 +332,7 @@ func openStream(ctx context.Context, url string) (*http.Response, *audioStream, 
 	if err != nil {
 		return nil, nil, err
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		_ = resp.Body.Close()
 		return nil, nil, fmt.Errorf("HTTP %d fetching stream", resp.StatusCode)
 	}

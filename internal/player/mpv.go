@@ -131,10 +131,11 @@ fail:
     return rc;
 }
 */
-import "C"
+import "C" //nolint:gocritic // dupImport false positive: cgo "C" pseudo-package aliases unsafe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -142,7 +143,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
+	"unsafe" //nolint:gocritic // dupImport false positive: cgo "C" pseudo-package aliases unsafe
 
 	"github.com/Benehiko/tidalt/v3/internal/logger"
 
@@ -173,7 +174,7 @@ func ListDevices() ([]DeviceInfo, error) {
 
 	// Collect card numbers that have at least one playback PCM.
 	playback := make(map[int]bool)
-	for _, line := range strings.Split(string(pcmData), "\n") {
+	for line := range strings.SplitSeq(string(pcmData), "\n") {
 		if !strings.Contains(line, "playback") {
 			continue
 		}
@@ -184,13 +185,13 @@ func ListDevices() ([]DeviceInfo, error) {
 	}
 
 	var devices []DeviceInfo
-	lines := strings.Split(string(cardData), "\n")
-	for _, line := range lines {
+	for line := range strings.SplitSeq(string(cardData), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
 		var cardNum int
+		//nolint:gocritic // uncheckedInlineErr false positive: err is checked on the next line
 		if _, err := fmt.Sscanf(trimmed, "%d", &cardNum); err != nil {
 			continue // continuation line, not a card header
 		}
@@ -204,8 +205,8 @@ func ListDevices() ([]DeviceInfo, error) {
 			}
 		}
 		longName := ""
-		if idx := strings.Index(line, " - "); idx != -1 {
-			longName = strings.TrimSpace(line[idx+3:])
+		if _, after, found := strings.Cut(line, " - "); found {
+			longName = strings.TrimSpace(after)
 		}
 		if longName == "" {
 			longName = cardName
@@ -317,7 +318,7 @@ func detectDevice() (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("no supported DAC found — connect a Hidizs S9 Pro or Focusrite Scarlett Solo")
+	return "", errors.New("no supported DAC found — connect a Hidizs S9 Pro or Focusrite Scarlett Solo")
 }
 
 // parseCardNum extracts the card number from an ALSA hw device string like "hw:1,0".
@@ -343,7 +344,7 @@ func reserveALSADevice(cardNum int) (release func(), err error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		// No session bus — skip reservation and try to open ALSA directly.
-		return func() {}, nil
+		return func() {}, nil //nolint:nilerr // no session bus is not an error; callers proceed without reservation
 	}
 
 	name := fmt.Sprintf("org.freedesktop.ReserveDevice1.Audio%d", cardNum)
@@ -593,6 +594,11 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		releaseReservation()
 		return false
 	}
+	// resp is reassigned on every seek / next-track reopen below; the inner
+	// transitions close the body they are replacing. This defer is a backstop
+	// that closes whichever response is current when the function returns, so
+	// no path leaks the body. Closing an already-closed http body is a no-op.
+	defer func() { _ = resp.Body.Close() }()
 
 	logger.L.Debug("HTTP response",
 		"status", resp.StatusCode,
