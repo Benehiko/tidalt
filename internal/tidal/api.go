@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // ErrNotFound is returned by GetTrack when the API responds with 404.
@@ -43,14 +44,20 @@ func apiErr(op string, status int, body []byte) error {
 	return fmt.Errorf("%s (status %d): %s", op, status, strings.TrimSpace(string(body)))
 }
 
+type Artist struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
 type Track struct {
 	ID     int    `json:"id"`
 	Title  string `json:"title"`
-	Artist struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	} `json:"artist"`
-	Album struct {
+	Artist Artist `json:"artist"`
+	// Artists is the plural form returned by some endpoints (notably /search),
+	// where the singular "artist" field is absent. normalizeArtist backfills
+	// Artist from Artists[0] so callers can always rely on Track.Artist.
+	Artists []Artist `json:"artists"`
+	Album   struct {
 		ID    int    `json:"id"`
 		Title string `json:"title"`
 		Cover string `json:"cover"` // UUID, e.g. "a3f1d2e4-1234-5678-abcd-ef0123456789"
@@ -95,6 +102,25 @@ type radioResponse struct {
 }
 
 type albumTracksResponse struct {
+	Items []Track `json:"items"`
+}
+
+// Album is a standalone album as returned by the artist albums endpoint.
+// (Track has its own inline album struct; this is the richer top-level shape.)
+type Album struct {
+	ID             int    `json:"id"`
+	Title          string `json:"title"`
+	Cover          string `json:"cover"` // UUID, same format as Track.Album.Cover
+	ReleaseDate    string `json:"releaseDate"`
+	NumberOfTracks int    `json:"numberOfTracks"`
+}
+
+type artistAlbumsResponse struct {
+	Items              []Album `json:"items"`
+	TotalNumberOfItems int     `json:"totalNumberOfItems"`
+}
+
+type artistTopTracksResponse struct {
 	Items []Track `json:"items"`
 }
 
@@ -184,7 +210,19 @@ func (c *Client) Search(ctx context.Context, query string) ([]Track, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return nil, err
 	}
+	for i := range res.Tracks.Items {
+		res.Tracks.Items[i].normalizeArtist()
+	}
 	return res.Tracks.Items, nil
+}
+
+// normalizeArtist fills the singular Artist field from Artists[0] when the
+// endpoint only returned the plural "artists" array (e.g. /search). This keeps
+// Track.Artist usable everywhere — playback, favoriting, the artist view.
+func (t *Track) normalizeArtist() {
+	if t.Artist.ID == 0 && t.Artist.Name == "" && len(t.Artists) > 0 {
+		t.Artist = t.Artists[0]
+	}
 }
 
 // StreamInfo carries the resolved stream URL and its detected format extension.
@@ -323,6 +361,136 @@ func (c *Client) GetAlbumTracks(ctx context.Context, albumID string) ([]Track, e
 		return nil, err
 	}
 	return res.Items, nil
+}
+
+// artistAlbumsPageLimit is the per-page album count requested when paginating
+// an artist's discography. artistAlbumsMaxPages caps the loop so a malformed
+// totalNumberOfItems can never spin forever.
+const (
+	artistAlbumsPageLimit = 50
+	artistAlbumsMaxPages  = 20 // up to 1000 albums
+)
+
+// GetArtistAlbums returns the artist's full discography, paginating through the
+// v1 /artists/{id}/albums endpoint until exhausted.
+func (c *Client) GetArtistAlbums(ctx context.Context, artistID int) ([]Album, error) {
+	client := c.GetAuthClient(ctx)
+
+	var albums []Album
+	for page := range artistAlbumsMaxPages {
+		params := url.Values{}
+		params.Set("countryCode", c.Session.CountryCode)
+		params.Set("limit", strconv.Itoa(artistAlbumsPageLimit))
+		params.Set("offset", strconv.Itoa(page*artistAlbumsPageLimit))
+
+		u := fmt.Sprintf("%s/artists/%d/albums?%s", BaseURL, artistID, params.Encode())
+		resp, err := client.Get(u)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != 200 {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			return nil, apiErr("get artist albums", resp.StatusCode, body)
+		}
+
+		var res artistAlbumsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+			_ = resp.Body.Close()
+			return nil, err
+		}
+		_ = resp.Body.Close()
+
+		albums = append(albums, res.Items...)
+
+		// Last page reached: a short page, or we've collected the reported total.
+		if len(res.Items) < artistAlbumsPageLimit ||
+			(res.TotalNumberOfItems > 0 && len(albums) >= res.TotalNumberOfItems) {
+			break
+		}
+	}
+	return albums, nil
+}
+
+// GetArtistTopTracks returns the artist's most popular tracks (up to limit).
+func (c *Client) GetArtistTopTracks(ctx context.Context, artistID, limit int) ([]Track, error) {
+	params := url.Values{}
+	params.Set("countryCode", c.Session.CountryCode)
+	params.Set("limit", strconv.Itoa(limit))
+
+	client := c.GetAuthClient(ctx)
+	u := fmt.Sprintf("%s/artists/%d/toptracks?%s", BaseURL, artistID, params.Encode())
+	resp, err := client.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, apiErr("get artist top tracks", resp.StatusCode, body)
+	}
+
+	var res artistTopTracksResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+	for i := range res.Items {
+		res.Items[i].normalizeArtist()
+	}
+	return res.Items, nil
+}
+
+// artistAllTracksConcurrency bounds how many album track-list requests run at
+// once in GetArtistAllTracks, so a deep discography doesn't open hundreds of
+// connections at the same time.
+const artistAllTracksConcurrency = 8
+
+// GetArtistAllTracks collects every track across all of the artist's albums.
+// Albums are fetched concurrently (bounded by artistAllTracksConcurrency); an
+// album that fails to load (e.g. region-locked) is skipped rather than aborting
+// the whole list. The result is flattened in album order and deduped by track ID
+// so songs that appear on both an album and a single/compilation are not repeated.
+func (c *Client) GetArtistAllTracks(ctx context.Context, artistID int) ([]Track, error) {
+	albums, err := c.GetArtistAlbums(ctx, artistID)
+	if err != nil {
+		return nil, err
+	}
+	if len(albums) == 0 {
+		return nil, nil
+	}
+
+	perAlbum := make([][]Track, len(albums))
+	sem := make(chan struct{}, artistAllTracksConcurrency)
+	var wg sync.WaitGroup
+	for i, alb := range albums {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx, albumID int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			ts, err := c.GetAlbumTracks(ctx, strconv.Itoa(albumID))
+			if err != nil {
+				return // skip this album
+			}
+			perAlbum[idx] = ts
+		}(i, alb.ID)
+	}
+	wg.Wait()
+
+	var all []Track
+	seen := make(map[int]bool)
+	for _, ts := range perAlbum {
+		for _, t := range ts {
+			if seen[t.ID] {
+				continue
+			}
+			seen[t.ID] = true
+			all = append(all, t)
+		}
+	}
+	return all, nil
 }
 
 func (c *Client) AddFavorite(ctx context.Context, trackID int) error {

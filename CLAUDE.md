@@ -16,7 +16,7 @@ Entry point. Handles signal setup, session load/restore from the secrets store, 
 ### `internal/tidal`
 Tidal API client.
 - `client.go` — OAuth2 device-flow authentication, token refresh, authenticated HTTP client
-- `api.go` — REST calls: favorites, search, track lookup, stream URL (quality ladder: HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW), mixes, mix tracks
+- `api.go` — REST calls: favorites, search, track lookup, stream URL (quality ladder: HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW), mixes, mix tracks, artist albums/top-tracks/all-tracks
 
 ### `internal/player`
 Bit-perfect FLAC playback via CGO + libasound.
@@ -36,7 +36,8 @@ Persistent storage.
 
 ### `internal/ui`
 BubbleTea TUI model (Model/Update/View).
-- Four states: `StateBrowse`, `StateMixes`, `StateSearch`, `StateDeviceSelect`
+- Five states: `StateBrowse`, `StateMixes`, `StateSearch`, `StateDeviceSelect`, `StateArtistAlbums`
 - Scrollable track and mix lists with a visible window helper
+- Artist view (`StateArtistAlbums`): opened with `a` on any track; lists the artist's albums plus "Play all tracks" / "Top tracks" entries, loading the chosen tracks into the browse queue
 - Progress bar with playback position, volume display, and device label
 - Auto-advances to the next track in the queue when playback finishes

@@ -49,6 +49,7 @@ const (
 	StateMixes
 	StateSearch
 	StateDeviceSelect
+	StateArtistAlbums // list of an artist's albums + synthetic quick-play entries
 )
 
 type Model struct {
@@ -70,6 +71,14 @@ type Model struct {
 	searchTracks  []tidal.Track
 	searchCursor  int
 	searchLoading bool
+
+	// Artist view — the selected artist's albums plus two synthetic quick-play
+	// rows ("Play all tracks", "Top tracks"). prevState (below) is reused for Esc.
+	artistID      int // 0 = none
+	artistName    string
+	artistAlbums  []tidal.Album
+	artistCursor  int
+	artistLoading bool
 
 	// Terminal size
 	width  int
@@ -241,11 +250,18 @@ type (
 	searchResultsMsg   []tidal.Track
 	openURLTracksMsg   []tidal.Track // tracks resolved from a startup tidal:// URL
 	cachedPlaylistMsg  []tidal.Track // playlist restored from bbolt on startup
-	errMsg             error
-	clearErrMsg        struct{}
-	tickMsg            time.Time
-	barTickMsg         time.Time
-	nowPlayingMsg      struct {
+	// artistAlbumsMsg carries an artist's discography after the user opens the
+	// artist view with "a".
+	artistAlbumsMsg struct {
+		artistID   int
+		artistName string
+		albums     []tidal.Album
+	}
+	errMsg        error
+	clearErrMsg   struct{}
+	tickMsg       time.Time
+	barTickMsg    time.Time
+	nowPlayingMsg struct {
 		done  <-chan struct{}
 		track *tidal.Track // refreshed track metadata (may be nil)
 		gen   uint64       // skip generation that spawned this command
@@ -679,6 +695,9 @@ func (m *Model) regenKittyRows() {
 	if m.state == StateSearch {
 		overhead += 2
 	}
+	if m.state == StateArtistAlbums {
+		overhead++ // extra "Artist: <name>" footer line
+	}
 	listHeight := m.height - overhead
 	if listHeight < 1 {
 		listHeight = 1
@@ -723,9 +742,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "esc":
-			if m.state == StateDeviceSelect {
+			switch m.state {
+			case StateDeviceSelect:
 				m.state = m.prevState
 				m.cursor = 0
+			case StateArtistAlbums:
+				// Return to wherever "a" was pressed, keeping the cursor there.
+				m.state = m.prevState
 			}
 
 		case "d":
@@ -814,6 +837,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return tracksMsg(tracks)
 				}
 			}
+			if m.state == StateArtistAlbums {
+				// Rows 0 and 1 are synthetic quick-play entries; rows 2+ are
+				// real albums (m.artistAlbums[cursor-2]). All paths load the
+				// tracks into the queue via tracksMsg without auto-playing.
+				artistID := m.artistID
+				switch m.artistCursor {
+				case 0: // ▶ Play all tracks
+					m.artistLoading = true
+					return m, func() tea.Msg {
+						tracks, err := m.client.GetArtistAllTracks(m.ctx, artistID)
+						if err != nil {
+							return errMsg(err)
+						}
+						return tracksMsg(tracks)
+					}
+				case 1: // ★ Top tracks
+					return m, func() tea.Msg {
+						tracks, err := m.client.GetArtistTopTracks(m.ctx, artistID, 100)
+						if err != nil {
+							return errMsg(err)
+						}
+						return tracksMsg(tracks)
+					}
+				default:
+					if idx := m.artistCursor - 2; idx >= 0 && idx < len(m.artistAlbums) {
+						albumID := fmt.Sprintf("%d", m.artistAlbums[idx].ID)
+						return m, func() tea.Msg {
+							tracks, err := m.client.GetAlbumTracks(m.ctx, albumID)
+							if err != nil {
+								return errMsg(err)
+							}
+							return tracksMsg(tracks)
+						}
+					}
+				}
+			}
 			if len(m.tracks) > 0 {
 				track := m.tracks[m.cursor]
 				_ = m.store.CacheTrack(track.ID, track)
@@ -841,18 +900,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// At top of results — move focus back to the search input.
 					m.searchInput.Focus()
 				}
+			} else if m.state == StateArtistAlbums {
+				if m.artistCursor > 0 {
+					m.artistCursor--
+				}
 			} else if m.cursor > 0 {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.state == StateSearch {
+			switch m.state {
+			case StateSearch:
 				if m.searchInput.Focused() {
 					// Move focus from input to the first result.
 					m.searchInput.Blur()
 				} else if m.searchCursor < len(m.searchTracks)-1 {
 					m.searchCursor++
 				}
-			} else {
+			case StateArtistAlbums:
+				// +2 for the two synthetic quick-play rows.
+				if m.artistCursor < len(m.artistAlbums)+2-1 {
+					m.artistCursor++
+				}
+			default:
 				max := len(m.tracks)
 				switch m.state {
 				case StateMixes:
@@ -1007,6 +1076,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+		case "a":
+			// Open the artist view for the track under the cursor. Falls back to
+			// the currently playing track when the active list has no selection.
+			var srcTrack *tidal.Track
+			if m.state == StateSearch && len(m.searchTracks) > 0 {
+				t := m.searchTracks[m.searchCursor]
+				srcTrack = &t
+			} else if (m.state == StateBrowse || m.state == StateArtistAlbums) && len(m.tracks) > 0 {
+				t := m.tracks[m.cursor]
+				srcTrack = &t
+			}
+			if srcTrack == nil && m.currentTrack != nil {
+				srcTrack = m.currentTrack
+			}
+			if srcTrack != nil && srcTrack.Artist.ID != 0 {
+				artistID := srcTrack.Artist.ID
+				artistName := srcTrack.Artist.Name
+				m.prevState = m.state // so Esc returns here
+				m.artistLoading = true
+				return m, func() tea.Msg {
+					albums, err := m.client.GetArtistAlbums(m.ctx, artistID)
+					if err != nil {
+						return errMsg(err)
+					}
+					return artistAlbumsMsg{artistID: artistID, artistName: artistName, albums: albums}
+				}
+			}
+
 		case "c":
 			if m.currentTrack != nil {
 				link := fmt.Sprintf("https://tidal.com/track/%d", m.currentTrack.ID)
@@ -1119,7 +1216,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(tracks) != len(m.tracks) || (len(tracks) > 0 && tracks[0].ID != m.tracks[0].ID) {
 					m.tracksOrder = tracks
 					m.applyShuffle()
-					m.state = StateBrowse
+					// Don't yank the user out of a view they're actively browsing
+					// (search results, artist view, device select). The updated
+					// playlist is still applied underneath, so it's there when they
+					// Tab back to Browse.
 				}
 			}
 		}
@@ -1286,8 +1386,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mixesMsg:
 		m.mixes = msg
 
+	case artistAlbumsMsg:
+		m.artistID = msg.artistID
+		m.artistName = msg.artistName
+		m.artistAlbums = msg.albums
+		m.artistCursor = 0
+		m.artistLoading = false
+		m.state = StateArtistAlbums
+
 	case errMsg:
 		m.errText = msg.Error()
+		// Clear the artist-view spinner if a fetch failed while loading it,
+		// otherwise it would hang on "Loading artist...".
+		m.artistLoading = false
 		return m, tea.Tick(5*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 
 	case clearErrMsg:
@@ -1631,6 +1742,9 @@ func (m Model) View() string {
 	if m.state == StateSearch {
 		overhead += 2
 	}
+	if m.state == StateArtistAlbums {
+		overhead++ // extra "Artist: <name>" footer line
+	}
 	listHeight := m.height - overhead
 	if listHeight < 1 {
 		listHeight = 1
@@ -1724,7 +1838,42 @@ func (m Model) View() string {
 				}
 			}
 		}
-		footer = "\n [TAB] Switch Tab | [ENTER] Search / Play | [↑/↓] Navigate | [SPACE] Pause | [f] Favorite | [c] Copy Link | [9/0] Vol | [d] Device | [q] Quit\n"
+		footer = "\n [TAB] Switch Tab | [ENTER] Search / Play | [↑/↓] Navigate | [SPACE] Pause | [a] Artist | [f] Favorite | [c] Copy Link | [9/0] Vol | [d] Device | [q] Quit\n"
+
+	case StateArtistAlbums:
+		if m.artistLoading {
+			listLines = append(listLines, "  Loading artist...")
+		} else {
+			total := len(m.artistAlbums) + 2
+			start, end := visibleWindow(m.artistCursor, total, listHeight)
+			for i := start; i < end; i++ {
+				cur := " "
+				if m.artistCursor == i {
+					cur = ">"
+				}
+				var label string
+				switch i {
+				case 0:
+					label = "▶ Play all tracks"
+				case 1:
+					label = "★ Top tracks"
+				default:
+					a := m.artistAlbums[i-2]
+					year := ""
+					if len(a.ReleaseDate) >= 4 {
+						year = " (" + a.ReleaseDate[:4] + ")"
+					}
+					label = fmt.Sprintf("%s%s — %d tracks", a.Title, year, a.NumberOfTracks)
+				}
+				line := fmt.Sprintf(" %s %s", cur, label)
+				if m.artistCursor == i {
+					listLines = append(listLines, cursorStyle.Render(truncateStr(line, listW)))
+				} else {
+					listLines = append(listLines, truncateStr(line, listW))
+				}
+			}
+		}
+		footer = fmt.Sprintf("\n Artist: %s\n [↑/↓] Navigate | [ENTER] Open | [a] Artist | [ESC] Back | [9/0] Vol | [q] Quit\n", m.artistName)
 
 	default:
 		items := m.tracks
@@ -1749,7 +1898,7 @@ func (m Model) View() string {
 		if m.clientMode && m.localPlaylist {
 			footer = "\n [TAB] Switch Tab | [ENTER] Send playlist + Play | [r] Radio | [f] Favorite | [9/0] Vol | [q] Quit\n"
 		} else {
-			footer = "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [>/<] Next/Prev | [s] Shuffle | [r] Radio | [f] Favorite | [c] Copy Link | [9/0] Vol | [d] Device | [q] Quit\n"
+			footer = "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [>/<] Next/Prev | [s] Shuffle | [r] Radio | [a] Artist | [f] Favorite | [c] Copy Link | [9/0] Vol | [d] Device | [q] Quit\n"
 		}
 	}
 

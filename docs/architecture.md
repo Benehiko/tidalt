@@ -50,10 +50,10 @@ flowchart TD
 | Package | Description |
 |---------|-------------|
 | `cmd/tidalt` | Entry point. Subcommands: TUI, `daemon`, `play`, `setup`, `setup --daemon`. Session load/restore, OAuth2 device-flow login. |
-| `internal/tidal` | Tidal API client. OAuth2 auth, token refresh, REST calls (favorites, search, stream URL, mixes, radio). |
+| `internal/tidal` | Tidal API client. OAuth2 auth, token refresh, REST calls (favorites, search, stream URL, mixes, radio, artist albums/top-tracks/all-tracks). |
 | `internal/player` | Bit-perfect FLAC playback via CGO + libasound. Direct ALSA `hw:` access, PCM format negotiation, PipeWire reservation, seek. |
 | `internal/store` | Persistent storage. OAuth2 session in system keychain (falls back to age-encrypted file). Volume, device, position, and track cache in bbolt. |
-| `internal/ui` | BubbleTea TUI. Browse/search/mixes/device-select states, progress bar, logo animation. Runs headless in daemon mode. |
+| `internal/ui` | BubbleTea TUI. Browse/search/mixes/device-select/artist-albums states, progress bar, logo animation. Runs headless in daemon mode. |
 | `internal/mpris` | MPRIS2 D-Bus server + client. Media-key commands, `io.tidalt.App` private interface for client↔server communication. |
 
 ## Dependencies
