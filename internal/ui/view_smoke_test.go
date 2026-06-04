@@ -84,6 +84,25 @@ func TestViewSidebarFocus(t *testing.T) {
 	}
 }
 
+// TestActionSheetRenders confirms the action sheet lists its actions over the
+// queue without panic, at several cursor positions.
+func TestActionSheetRenders(t *testing.T) {
+	for _, cur := range []int{0, 4, 8} {
+		m := newSmokeModel()
+		m.width, m.height = 96, 26
+		tr := m.tracks[1]
+		m.sheetTrack = &tr
+		m.sheetCursor = cur
+		m.overlay = OverlayActionSheet
+		out := stripANSI(m.View())
+		for _, want := range []string{"Play now", "Add to queue", "Start radio", "Copy Tidal link"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("cursor %d: action sheet missing %q", cur, want)
+			}
+		}
+	}
+}
+
 // TestClientTintRenders confirms client mode renders without panic and the
 // theme tint applies.
 func TestClientTintRenders(t *testing.T) {
