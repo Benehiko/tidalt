@@ -1,13 +1,30 @@
 # syntax=docker/dockerfile:1
 
+# ── FFmpeg stage: build a minimal, static FFmpeg for the target arch ──────────
+# See packaging/debian/Dockerfile for the rationale behind statically linking a
+# trimmed-down FFmpeg instead of depending on the distro's shared libraries.
+FROM --platform=$BUILDPLATFORM debian:trixie-slim AS ffmpeg
+ARG TARGETARCH
+
+RUN dpkg --add-architecture ${TARGETARCH} && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential nasm pkg-config curl xz-utils ca-certificates \
+        crossbuild-essential-${TARGETARCH} && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY packaging/build-static-ffmpeg.sh /build-static-ffmpeg.sh
+RUN bash /build-static-ffmpeg.sh /opt/ffmpeg ${TARGETARCH}
+
 # ── Build stage ───────────────────────────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS build
 
 ARG TARGETARCH
 ARG VERSION
 
 WORKDIR /src
 COPY . .
+COPY --from=ffmpeg /opt/ffmpeg /opt/ffmpeg
 
 RUN dpkg --add-architecture ${TARGETARCH} && \
     apt-get update && \
@@ -22,6 +39,7 @@ RUN case "${TARGETARCH}" in \
         *) echo "unsupported arch: ${TARGETARCH}" && exit 1 ;; \
     esac && \
     CGO_ENABLED=1 CC=${CC} GOARCH=${TARGETARCH} go build \
+        -tags staticav \
         -trimpath \
         -buildmode=pie \
         -ldflags "-s -w -linkmode=external -X main.version=v${VERSION}" \
@@ -29,6 +47,7 @@ RUN case "${TARGETARCH}" in \
         ./cmd/tidalt
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
+# FFmpeg is statically linked into the binary, so only ALSA is needed at runtime.
 FROM debian:stable-slim
 
 RUN apt-get update && \

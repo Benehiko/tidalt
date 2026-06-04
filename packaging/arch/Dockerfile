@@ -4,7 +4,7 @@ FROM archlinux:latest AS package
 ARG VERSION
 
 RUN pacman -Syu --noconfirm && \
-    pacman -S --noconfirm base-devel go alsa-lib git sudo && \
+    pacman -S --noconfirm base-devel go alsa-lib ffmpeg git sudo && \
     useradd -m builder && \
     echo 'builder ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers
 

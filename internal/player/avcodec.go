@@ -1,7 +1,10 @@
 package player
 
 /*
-#cgo LDFLAGS: -lavformat -lavcodec -lavutil -lswresample
+// Linker and include flags are provided by build-tag-gated files:
+//   avcodec_dynamic.go (default) links the system-shared FFmpeg libraries.
+//   avcodec_static.go  (-tags staticav) links a self-contained static FFmpeg
+//   built under /opt/ffmpeg, for portable distro packages.
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>

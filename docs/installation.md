@@ -37,6 +37,18 @@ Download the `.rpm` from the latest release:
 sudo dnf install tidalt-*.rpm
 ```
 
+### Raw binary (any distro)
+
+Each release also attaches standalone `tidalt-linux-amd64` / `tidalt-linux-arm64`
+binaries. FFmpeg is statically bundled, so the only runtime requirement is ALSA
+(`libasound2` / `alsa-lib`, present on virtually every desktop Linux):
+
+```bash
+curl -LO https://github.com/Benehiko/tidalt/releases/latest/download/tidalt-linux-amd64
+chmod +x tidalt-linux-amd64
+sudo install -Dm755 tidalt-linux-amd64 /usr/local/bin/tidalt
+```
+
 ---
 
 ## Docker
@@ -56,13 +68,19 @@ your ALSA devices inside the container.
 
 ### Prerequisites
 
-Go 1.26+ and ALSA development headers:
+Go 1.26+, ALSA development headers, and FFmpeg development headers:
 
 ```bash
-sudo pacman -S go alsa-lib          # Arch
-sudo apt install golang libasound2-dev  # Debian / Ubuntu
-sudo dnf install golang alsa-lib-devel  # Fedora
+sudo pacman -S go alsa-lib ffmpeg                                                        # Arch
+sudo apt install golang libasound2-dev libavformat-dev libavcodec-dev libavutil-dev libswresample-dev  # Debian / Ubuntu
+sudo dnf install golang alsa-lib-devel libavformat-free-devel libavcodec-free-devel libavutil-free-devel libswresample-free-devel  # Fedora
 ```
+
+> A plain `go build` / `go install` links against the system's shared FFmpeg
+> libraries, so the matching runtime libraries (`ffmpeg` on Arch, `libavformat`
+> on Debian/Ubuntu, `libavformat-free` on Fedora) must also be installed to run
+> the binary. The official distro packages instead bundle a minimal, statically
+> linked FFmpeg and have no FFmpeg runtime dependency.
 
 ### go install
 
@@ -161,7 +179,7 @@ makepkg -g >> PKGBUILD
 Install build dependencies:
 
 ```bash
-sudo apt install debhelper libasound2-dev
+sudo apt install debhelper libasound2-dev libavformat-dev libavcodec-dev libavutil-dev libswresample-dev
 ```
 
 Go 1.26+ is required to compile the binary. Install it from
@@ -185,16 +203,25 @@ dpkg-buildpackage -us -uc -b
 sudo dpkg -i ../tidalt_${VERSION}-1_amd64.deb
 ```
 
-> `libasound2-dev` is only needed for the `go build` step above. The
+> The `-dev` packages are only needed for the `go build` step above. The
 > `dpkg-buildpackage` step itself has no native build dependencies.
+>
+> This manual build links FFmpeg dynamically, so the resulting `.deb` needs
+> the matching `libavformat` / `libavcodec` runtime packages installed. The
+> official packages (built via the `packaging/` Dockerfiles) instead bundle a
+> static FFmpeg and carry no FFmpeg runtime dependency.
 
 ### Fedora — rpmbuild
 
 ```bash
-sudo dnf install rpm-build alsa-lib-devel
+sudo dnf install rpm-build alsa-lib-devel libavformat-free-devel libavcodec-free-devel libavutil-free-devel libswresample-free-devel
 ```
 
 Go 1.26+ is required. Install from [go.dev/dl](https://go.dev/dl/).
+
+> As with the Debian recipe, this manual build links FFmpeg dynamically and the
+> resulting `.rpm` depends on the `libavformat-free` runtime libraries. The
+> official packages bundle a static FFmpeg instead.
 
 ```bash
 VERSION=3.0.0

@@ -1,13 +1,32 @@
 # syntax=docker/dockerfile:1
 
-# ── Build stage: cross-compile the binary ────────────────────────────────────
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
+# ── FFmpeg stage: build a minimal, static FFmpeg for the target arch ──────────
+# See packaging/debian/Dockerfile for the rationale. Building FFmpeg statically
+# is what lets the cross-compiled (Debian-toolchain) binary run on Fedora — the
+# Fedora and Debian FFmpeg sonames differ, so a dynamically-linked binary would
+# fail to load the matching .so on the target system.
+FROM --platform=$BUILDPLATFORM debian:trixie-slim AS ffmpeg
+ARG TARGETARCH
+
+RUN dpkg --add-architecture ${TARGETARCH} && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential nasm pkg-config curl xz-utils ca-certificates \
+        crossbuild-essential-${TARGETARCH} && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY packaging/build-static-ffmpeg.sh /build-static-ffmpeg.sh
+RUN bash /build-static-ffmpeg.sh /opt/ffmpeg ${TARGETARCH}
+
+# ── Build stage: cross-compile the binary, static-linking the FFmpeg above ────
+FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS build
 
 ARG TARGETARCH
 ARG VERSION
 
 WORKDIR /src
 COPY . .
+COPY --from=ffmpeg /opt/ffmpeg /opt/ffmpeg
 
 RUN dpkg --add-architecture ${TARGETARCH} && \
     apt-get update && \
@@ -22,6 +41,7 @@ RUN case "${TARGETARCH}" in \
         *) echo "unsupported arch: ${TARGETARCH}" && exit 1 ;; \
     esac && \
     CGO_ENABLED=1 CC=${CC} GOARCH=${TARGETARCH} go build \
+        -tags staticav \
         -trimpath \
         -buildmode=pie \
         -ldflags "-s -w -linkmode=external -X main.version=v${VERSION}" \
@@ -34,6 +54,7 @@ FROM fedora:latest AS package
 ARG TARGETARCH
 ARG VERSION
 
+# FFmpeg is statically linked into the binary, so only alsa-lib is required.
 RUN dnf install -y rpm-build alsa-lib && \
     dnf clean all
 

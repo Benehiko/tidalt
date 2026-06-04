@@ -25,7 +25,7 @@ Bit-perfect FLAC playback via CGO + libasound.
 - Format preference for 16-bit sources: S32_LE → S16_LE → S24_3LE → S24_LE (S32_LE first because some DACs, e.g. CS43198-based Hidizs S9 Pro Plus, have a broken S16_LE USB endpoint)
 - Format preference for 24-bit sources: S24_3LE → S24_LE → S32_LE
 - Acquires `org.freedesktop.ReserveDevice1.Audio{N}` on D-Bus before opening the device, asking PipeWire to release if it holds the reservation
-- Decodes FLAC in-flight from the HTTP stream using `github.com/mewkiz/flac`
+- Demuxes and decodes the HTTP stream in-flight via FFmpeg (libavformat/libavcodec/libswresample, CGO) — FLAC, AAC/mp4, and ALAC — resampling to S32LE. A custom AVIO callback feeds bytes straight from the HTTP response. FFmpeg is linked dynamically for local/dev/CI builds (needs the distro's libav*-dev headers); the official distro packages (`packaging/`) bundle a minimal static FFmpeg built from source, selected with the `staticav` build tag
 - Volume, pause, and position tracking via atomics
 - Auto-detects known DACs (Hidizs S9 Pro, Hidizs S9 Pro Plus "Martha", Focusrite Scarlett Solo) from `/proc/asound/cards`
 
