@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/atotto/clipboard"
@@ -594,64 +593,19 @@ func (m Model) updateArtist(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.commonKeys(k)
 }
 
-// updateSearchKeys handles the Search section (input + results navigation).
-func (m Model) updateSearchKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch k.String() {
-	case keyEnter:
-		if m.searchInput.Focused() {
-			query := strings.TrimSpace(m.searchInput.Value())
-			if query == "" {
-				return m, nil
-			}
-			m.searchLoading = true
-			m.searchTracks = nil
-			m.searchCursor = 0
-			return m, func() tea.Msg {
-				tracks, err := resolveQuery(m.ctx, m.client, m.store, query)
-				if err != nil {
-					return errMsg(err)
-				}
-				return searchResultsMsg(tracks)
-			}
-		}
-		if len(m.searchTracks) > 0 {
-			track := m.searchTracks[m.searchCursor]
-			_ = m.store.CacheTrack(track.ID, track)
-			cmd := m.playTrackCmd(track)
-			return m, cmd
-		}
-		return m, nil
-	case keyUp, "k":
-		if m.searchCursor > 0 {
-			m.searchCursor--
-		} else if !m.searchInput.Focused() {
-			m.searchInput.Focus()
-		}
-		return m, nil
-	case keyDown, "j":
-		if m.searchInput.Focused() {
-			m.searchInput.Blur()
-		} else if m.searchCursor < len(m.searchTracks)-1 {
-			m.searchCursor++
-		}
-		return m, nil
-	}
-	if m.searchInput.Focused() {
-		var cmd tea.Cmd
-		m.searchInput, cmd = m.searchInput.Update(k)
-		return m, cmd
-	}
-	return m.commonKeys(k)
-}
-
 // --- selection helpers ---
 
 // selectedTrack returns the track under the cursor in the active context, or
 // the current track as a fallback. Returns nil when nothing is selectable.
 func (m *Model) selectedTrack() *tidal.Track {
 	switch {
-	case m.section == SecSearch && len(m.searchTracks) > 0:
-		t := m.searchTracks[m.searchCursor]
+	case m.section == SecSearch:
+		return m.selectedTrackForSearch()
+	case m.section == SecHistory && len(m.history) > 0 && m.cursor < len(m.history):
+		t := m.history[m.cursor]
+		return &t
+	case m.section == SecPlaylists && m.detailFocus && len(m.detailTracks) > 0 && m.detailCursor < len(m.detailTracks):
+		t := m.detailTracks[m.detailCursor]
 		return &t
 	case len(m.tracks) > 0 && m.cursor >= 0 && m.cursor < len(m.tracks):
 		t := m.tracks[m.cursor]

@@ -86,9 +86,12 @@ type Model struct {
 	mixes  []tidal.Mix
 	cursor int
 
-	// Search — own list so results don't clobber My Music
+	// Search — own list so results don't clobber My Music. searchResults holds
+	// the grouped multi-category results; searchCursor indexes the flattened
+	// list of selectable result rows (see searchRows).
 	searchInput   textinput.Model
-	searchTracks  []tidal.Track
+	searchTracks  []tidal.Track // legacy flat track list (still used by URL resolver path)
+	searchResults tidal.SearchResults
 	searchCursor  int
 	searchLoading bool
 
@@ -973,6 +976,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case searchResultsMsg:
 		m.searchTracks = msg
+		m.searchCursor = 0
+		m.searchLoading = false
+		m.searchInput.Blur()
+
+	case searchGroupedMsg:
+		m.searchResults = tidal.SearchResults(msg)
 		m.searchCursor = 0
 		m.searchLoading = false
 		m.searchInput.Blur()
