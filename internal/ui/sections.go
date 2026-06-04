@@ -3,8 +3,6 @@ package ui
 import (
 	"fmt"
 	"strings"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 // artistViewActive reports whether the transient artist drill-down is showing.
@@ -64,37 +62,6 @@ func (m *Model) renderMixesPane(t Theme, w, h int) string {
 		rows = append(rows, t.RowDim.Render("No mixes loaded yet."))
 	}
 	return renderListPanel(t, "DAILY MIXES", m.focusMain, rows, m.cursor, w, h)
-}
-
-// renderSearchPane renders the search input above the results list.
-func (m *Model) renderSearchPane(t Theme, w, h int) string {
-	innerW := max(w-2, 1)
-	input := "  " + m.searchInput.View()
-
-	var rows []string
-	switch {
-	case m.searchLoading:
-		rows = append(rows, t.RowDim.Render("Searching…"))
-	case len(m.searchTracks) == 0 && m.searchInput.Value() != "":
-		rows = append(rows, t.RowDim.Render("No results."))
-	default:
-		for i := range m.searchTracks {
-			tr := m.searchTracks[i]
-			line := renderTrackRow(t, tr, rowOpts{
-				selected:   !m.searchInput.Focused() && i == m.searchCursor,
-				fav:        m.favorites[tr.ID],
-				showArtist: true,
-				width:      innerW,
-				duration:   tr.Duration,
-			})
-			rows = append(rows, line)
-		}
-	}
-
-	// The results panel fills the space under the input line (1 row + blank).
-	listH := max(h-2, 1)
-	panel := renderListPanel(t, "SEARCH", m.focusMain, rows, m.searchCursor, w, listH)
-	return lipgloss.JoinVertical(lipgloss.Left, input, "", panel)
 }
 
 // renderArtistPane renders the transient artist drill-down: two synthetic

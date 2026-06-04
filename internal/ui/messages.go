@@ -15,6 +15,7 @@ type (
 	favoritesLoadedMsg []tidal.Track
 	mixesMsg           []tidal.Mix
 	searchResultsMsg   []tidal.Track
+	searchGroupedMsg   tidal.SearchResults
 	// Library section data.
 	playlistsMsg  []tidal.Playlist
 	favArtistsMsg []tidal.Artist

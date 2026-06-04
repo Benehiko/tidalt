@@ -219,6 +219,37 @@ func TestQueueSavedMsg(t *testing.T) {
 	}
 }
 
+// TestGroupedSearch renders grouped results and verifies the flattened cursor
+// activates the right entity (artist row → drill-down).
+func TestGroupedSearch(t *testing.T) {
+	m := newSmokeModel()
+	m.width, m.height = 100, 26
+	m.section = SecSearch
+	m.searchInput.Blur()
+	m.searchResults = tidal.SearchResults{
+		Tracks:  []tidal.Track{{ID: 1, Title: "King For A Day", Artist: tidal.Artist{Name: "PTV"}}},
+		Artists: []tidal.Artist{{ID: 9, Name: "Pierce The Veil"}},
+		Albums:  []tidal.Album{{ID: 5, Title: "Collide With The Sky", NumberOfTracks: 13}},
+	}
+	out := stripANSI(m.renderSearchPane(m.theme, 80, 20))
+	for _, want := range []string{"SONGS", "ARTISTS", "ALBUMS", "Collide With The Sky"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("grouped search missing %q", want)
+		}
+	}
+
+	// Flattened order is tracks, artists, albums: index 1 is the artist.
+	m.searchCursor = 1
+	res, _ := m.activateSearchRow()
+	nm, ok := res.(Model)
+	if !ok {
+		t.Fatalf("activate should return a Model")
+	}
+	if !nm.showArtist {
+		t.Errorf("activating an artist row should open the artist drill-down")
+	}
+}
+
 // TestClientTintRenders confirms client mode renders without panic and the
 // theme tint applies.
 func TestClientTintRenders(t *testing.T) {
