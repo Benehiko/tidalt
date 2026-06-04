@@ -228,6 +228,42 @@ func (s *SecretsStore) LoadDevice() (string, error) {
 	return device, err
 }
 
+// SaveTheme persists the selected color-scheme name (a key into the UI's
+// palette registry) so the chosen theme survives across launches.
+func (s *SecretsStore) SaveTheme(name string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		return b.Put([]byte("theme"), []byte(name))
+	})
+}
+
+// LoadTheme returns the saved color-scheme name, or "" if none has been set
+// (the caller falls back to the default palette).
+func (s *SecretsStore) LoadTheme() (string, error) {
+	if s.db == nil {
+		return "", nil
+	}
+	var theme string
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte("theme"))
+		if v != nil {
+			theme = string(v)
+		}
+		return nil
+	})
+	return theme, err
+}
+
 func (s *SecretsStore) SaveVolume(vol float64) error {
 	if s.db == nil {
 		return nil
