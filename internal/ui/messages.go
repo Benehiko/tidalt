@@ -29,6 +29,7 @@ type (
 	}
 	openURLTracksMsg  []tidal.Track // tracks resolved from a startup tidal:// URL
 	cachedPlaylistMsg []tidal.Track // playlist restored from bbolt on startup
+	historyLoadedMsg  []tidal.Track // recently-played restored from bbolt on startup
 	// artistAlbumsMsg carries an artist's discography after the user opens the
 	// artist view with "a".
 	artistAlbumsMsg struct {

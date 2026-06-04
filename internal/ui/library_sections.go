@@ -27,6 +27,7 @@ func (m *Model) recordHistory(t tidal.Track) {
 		}
 	}
 	m.history = out
+	_ = m.store.SaveHistory(m.history)
 }
 
 // --- Playlists (index + detail) ---

@@ -622,6 +622,17 @@ func (m Model) Init() tea.Cmd {
 			}
 			return nil
 		},
+		// Restore the recently-played history persisted last session.
+		func() tea.Msg {
+			if m.store == nil {
+				return nil
+			}
+			var hist []tidal.Track
+			if err := m.store.LoadHistory(&hist); err == nil && len(hist) > 0 {
+				return historyLoadedMsg(hist)
+			}
+			return nil
+		},
 		func() tea.Msg {
 			tracks, err := m.client.GetFavorites(m.ctx, 50)
 			if err != nil {
@@ -958,6 +969,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.restorePosition = lastPos
 				m.currPos = lastPos
 			}
+		}
+
+	case historyLoadedMsg:
+		if len(m.history) == 0 {
+			m.history = []tidal.Track(msg)
 		}
 
 	case favoritesLoadedMsg:
