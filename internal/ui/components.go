@@ -191,13 +191,6 @@ func renderTrackRow(t Theme, tr tidal.Track, o rowOpts) string {
 		titleStyle = t.RowPlaying
 	}
 
-	var mid strings.Builder
-	mid.WriteString(titleStyle.Render(title))
-	if o.showArtist && tr.Artist.Name != "" {
-		mid.WriteString(t.RowFaint.Render(" — "))
-		mid.WriteString(t.RowDim.Render(tr.Artist.Name))
-	}
-
 	fav := "  "
 	if o.fav {
 		fav = " " + t.Fav.Render("♥")
@@ -208,13 +201,26 @@ func renderTrackRow(t Theme, tr tidal.Track, o rowOpts) string {
 		dur = " " + t.RowDim.Render(formatTime(float64(o.duration)))
 	}
 
-	left := curStyle.Render(cur) + " " + idx + mid.String() + fav
-	// Right-align the duration within o.width.
-	pad := max(o.width-lipgloss.Width(left)-lipgloss.Width(dur), 0)
-	line := " " + left + strings.Repeat(" ", pad) + dur
+	// Fixed-width left gutter (leading space + cursor + space + index) and the
+	// right-aligned columns (fav + duration). The title/artist "middle" is
+	// truncated to whatever space remains so the duration always survives.
+	prefix := " " + curStyle.Render(cur) + " " + idx
+	fixed := lipgloss.Width(prefix) + lipgloss.Width(fav) + lipgloss.Width(dur)
+	midRoom := max(o.width-fixed, 1)
 
-	line = truncateStr(line, o.width)
+	mid := titleStyle.Render(title)
+	if o.showArtist && tr.Artist.Name != "" {
+		mid += t.RowFaint.Render(" — ") + t.RowDim.Render(tr.Artist.Name)
+	}
+	mid = truncateStr(mid, midRoom)
+
+	// Pad between the middle and the right-aligned fav+duration columns.
+	pad := max(o.width-lipgloss.Width(prefix)-lipgloss.Width(mid)-lipgloss.Width(fav)-lipgloss.Width(dur), 0)
+	line := prefix + mid + fav + strings.Repeat(" ", pad) + dur
+
 	if o.selected {
+		// Nested fg colors would reset the selection background mid-line, so
+		// the band is rendered over the plain text with a uniform foreground.
 		return t.RowSel.Width(o.width).Render(stripANSI(line))
 	}
 	return line

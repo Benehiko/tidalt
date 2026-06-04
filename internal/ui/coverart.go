@@ -7,6 +7,8 @@ import (
 	_ "image/jpeg"
 	"net/http"
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // fetchCoverImage downloads the image at url and decodes it.
@@ -225,17 +227,20 @@ func coverPanelLines(img image.Image, title, artist, album string, w, h int, kit
 	return lines
 }
 
-// truncateStr shortens s to at most n runes, adding "…" if truncated.
+// truncateStr shortens s to at most n display columns, appending "…" when it
+// overflows. It is ANSI-aware: escape sequences are not counted toward the
+// width and are never split (which would emit a broken/replacement glyph), and
+// wide runes are measured correctly.
 func truncateStr(s string, n int) string {
-	runes := []rune(s)
-	if len(runes) <= n {
-		return s
-	}
 	if n < 1 {
 		return ""
 	}
-	if n < 4 {
-		return string(runes[:n])
+	if ansi.StringWidth(s) <= n {
+		return s
 	}
-	return string(runes[:n-1]) + "…"
+	if n < 4 {
+		return ansi.Truncate(s, n, "")
+	}
+	// The tail counts toward the target width, so pass n (not n-1).
+	return ansi.Truncate(s, n, "…")
 }

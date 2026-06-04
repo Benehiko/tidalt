@@ -305,6 +305,38 @@ func TestThemePickerPreviewCommitRevert(t *testing.T) {
 	}
 }
 
+// TestNoBrokenGlyphsAndDurations guards the ANSI-aware truncation: styled rows
+// must never be chopped mid-escape (which produces U+FFFD) and the duration
+// column must survive even when titles are long.
+func TestNoBrokenGlyphsAndDurations(t *testing.T) {
+	m := newSmokeModel()
+	m.width, m.height = 100, 16
+	m.currentTrack = &tidal.Track{ID: 1, Title: "A Very Long Track Title That Should Be Truncated Hard", Artist: tidal.Artist{Name: "Some Artist"}, Duration: 412}
+	m.isPlaying = true
+	m.currPos, m.duration = 90, 412
+
+	out := m.View()
+	if strings.ContainsRune(out, '�') {
+		t.Errorf("output contains the replacement glyph — a styled string was truncated mid-escape")
+	}
+	// Durations of the seeded queue tracks must be present.
+	for _, want := range []string{"1:18", "3:32", "3:50"} {
+		if !strings.Contains(stripANSI(out), want) {
+			t.Errorf("queue row should show duration %q", want)
+		}
+	}
+}
+
+// TestRowDurationSurvivesNarrow asserts the duration column survives a narrow
+// pane (the title is truncated instead).
+func TestRowDurationSurvivesNarrow(t *testing.T) {
+	tr := tidal.Track{Title: "An Extremely Long Song Title That Will Not Fit", Artist: tidal.Artist{Name: "Artist Name Here"}, Duration: 245}
+	row := stripANSI(renderTrackRow(paletteTidalt.Theme(), tr, rowOpts{showIndex: true, index: 1, showArtist: true, width: 40, duration: 245}))
+	if !strings.Contains(row, "4:05") {
+		t.Errorf("duration should survive narrow width, got %q", row)
+	}
+}
+
 // TestClientTintRenders confirms client mode renders without panic and the
 // theme tint applies.
 func TestClientTintRenders(t *testing.T) {
