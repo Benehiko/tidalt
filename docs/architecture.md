@@ -50,10 +50,10 @@ flowchart TD
 | Package | Description |
 |---------|-------------|
 | `cmd/tidalt` | Entry point. Subcommands: TUI, `daemon`, `play`, `setup`, `setup --daemon`. Session load/restore, OAuth2 device-flow login. |
-| `internal/tidal` | Tidal API client. OAuth2 auth, token refresh, REST calls (favorites, search, stream URL, mixes, radio). |
-| `internal/player` | Bit-perfect FLAC playback via CGO + libasound. Direct ALSA `hw:` access, PCM format negotiation, PipeWire reservation, seek. |
+| `internal/tidal` | Tidal API client. OAuth2 auth, token refresh, REST calls (favorites, search, stream URL, mixes, radio, artist albums/top-tracks/all-tracks). |
+| `internal/player` | Bit-perfect playback via CGO. FFmpeg (libav*) demuxes/decodes the stream; libasound plays it. Direct ALSA `hw:` access, PCM format negotiation, PipeWire reservation, seek. |
 | `internal/store` | Persistent storage. OAuth2 session in system keychain (falls back to age-encrypted file). Volume, device, position, and track cache in bbolt. |
-| `internal/ui` | BubbleTea TUI. Browse/search/mixes/device-select states, progress bar, logo animation. Runs headless in daemon mode. |
+| `internal/ui` | BubbleTea TUI. Browse/search/mixes/device-select/artist-albums states, progress bar, logo animation. Runs headless in daemon mode. |
 | `internal/mpris` | MPRIS2 D-Bus server + client. Media-key commands, `io.tidalt.App` private interface for client↔server communication. |
 
 ## Dependencies
@@ -63,8 +63,8 @@ flowchart TD
 | [charmbracelet/bubbletea](https://github.com/charmbracelet/bubbletea) | TUI framework |
 | [charmbracelet/bubbles](https://github.com/charmbracelet/bubbles) | Progress bar, text input |
 | [charmbracelet/lipgloss](https://github.com/charmbracelet/lipgloss) | Terminal styling |
-| [mewkiz/flac](https://github.com/mewkiz/flac) | Pure-Go FLAC decoder |
 | [godbus/dbus](https://github.com/godbus/dbus) | D-Bus (PipeWire reservation + MPRIS2) |
 | [docker/secrets-engine](https://github.com/docker/secrets-engine) | Secure credential storage |
 | [go.etcd.io/bbolt](https://go.etcd.io/bbolt) | Local settings & track metadata cache |
 | libasound (CGO) | Direct ALSA `hw:` playback |
+| FFmpeg — libavformat/libavcodec/libswresample (CGO) | Demux/decode the streamed audio (FLAC, AAC/mp4, ALAC) and resample to S32LE. Linked dynamically for local/dev builds; the official distro packages bundle a minimal static FFmpeg. |

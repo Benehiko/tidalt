@@ -11,10 +11,33 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // ErrNotFound is returned by GetTrack when the API responds with 404.
 var ErrNotFound = errors.New("not found")
+
+// authGet issues a context-aware GET to u through the authenticated client.
+// It centralises request construction so every call carries the request
+// context (satisfying noctx) and reuses the oauth2 token source.
+func (c *Client) authGet(ctx context.Context, u string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	return c.GetAuthClient(ctx).Do(req)
+}
+
+// authPostForm issues a context-aware form POST to u through the authenticated
+// client.
+func (c *Client) authPostForm(ctx context.Context, u string, body url.Values) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(body.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return c.GetAuthClient(ctx).Do(req)
+}
 
 // CoverURL returns the HTTPS URL for the album cover image at the given size.
 // cover is the UUID string returned in Track.Album.Cover.
@@ -43,14 +66,20 @@ func apiErr(op string, status int, body []byte) error {
 	return fmt.Errorf("%s (status %d): %s", op, status, strings.TrimSpace(string(body)))
 }
 
+type Artist struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
 type Track struct {
 	ID     int    `json:"id"`
 	Title  string `json:"title"`
-	Artist struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	} `json:"artist"`
-	Album struct {
+	Artist Artist `json:"artist"`
+	// Artists is the plural form returned by some endpoints (notably /search),
+	// where the singular "artist" field is absent. normalizeArtist backfills
+	// Artist from Artists[0] so callers can always rely on Track.Artist.
+	Artists []Artist `json:"artists"`
+	Album   struct {
 		ID    int    `json:"id"`
 		Title string `json:"title"`
 		Cover string `json:"cover"` // UUID, e.g. "a3f1d2e4-1234-5678-abcd-ef0123456789"
@@ -98,6 +127,25 @@ type albumTracksResponse struct {
 	Items []Track `json:"items"`
 }
 
+// Album is a standalone album as returned by the artist albums endpoint.
+// (Track has its own inline album struct; this is the richer top-level shape.)
+type Album struct {
+	ID             int    `json:"id"`
+	Title          string `json:"title"`
+	Cover          string `json:"cover"` // UUID, same format as Track.Album.Cover
+	ReleaseDate    string `json:"releaseDate"`
+	NumberOfTracks int    `json:"numberOfTracks"`
+}
+
+type artistAlbumsResponse struct {
+	Items              []Album `json:"items"`
+	TotalNumberOfItems int     `json:"totalNumberOfItems"`
+}
+
+type artistTopTracksResponse struct {
+	Items []Track `json:"items"`
+}
+
 // v2 JSON:API types for mixes and playlist items.
 
 type v2ResourceIdentifier struct {
@@ -116,14 +164,13 @@ type v2jsonAPIResponse struct {
 }
 
 func (c *Client) GetUser(ctx context.Context) (*UserResponse, error) {
-	client := c.GetAuthClient(ctx)
-	resp, err := client.Get(fmt.Sprintf("%s/users/%d", BaseURL, c.Session.UserID))
+	resp, err := c.authGet(ctx, fmt.Sprintf("%s/users/%d", BaseURL, c.Session.UserID))
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, apiErr("get user", resp.StatusCode, body)
 	}
@@ -138,17 +185,16 @@ func (c *Client) GetUser(ctx context.Context) (*UserResponse, error) {
 func (c *Client) GetTrack(ctx context.Context, trackID string) (*Track, error) {
 	params := url.Values{}
 	params.Set("countryCode", c.Session.CountryCode)
-	client := c.GetAuthClient(ctx)
-	resp, err := client.Get(BaseURL + "/tracks/" + trackID + "?" + params.Encode())
+	resp, err := c.authGet(ctx, BaseURL+"/tracks/"+trackID+"?"+params.Encode())
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode == 404 {
+	if resp.StatusCode == http.StatusNotFound {
 		return nil, ErrNotFound
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, apiErr("get track", resp.StatusCode, body)
 	}
@@ -167,15 +213,14 @@ func (c *Client) Search(ctx context.Context, query string) ([]Track, error) {
 	params.Set("countryCode", c.Session.CountryCode)
 	params.Set("types", "TRACKS")
 
-	client := c.GetAuthClient(ctx)
 	u := BaseURL + "/search?" + params.Encode()
-	resp, err := client.Get(u)
+	resp, err := c.authGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, apiErr("search", resp.StatusCode, body)
 	}
@@ -184,7 +229,19 @@ func (c *Client) Search(ctx context.Context, query string) ([]Track, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return nil, err
 	}
+	for i := range res.Tracks.Items {
+		res.Tracks.Items[i].normalizeArtist()
+	}
 	return res.Tracks.Items, nil
+}
+
+// normalizeArtist fills the singular Artist field from Artists[0] when the
+// endpoint only returned the plural "artists" array (e.g. /search). This keeps
+// Track.Artist usable everywhere — playback, favoriting, the artist view.
+func (t *Track) normalizeArtist() {
+	if t.Artist.ID == 0 && t.Artist.Name == "" && len(t.Artists) > 0 {
+		t.Artist = t.Artists[0]
+	}
 }
 
 // StreamInfo carries the resolved stream URL and its detected format extension.
@@ -198,49 +255,58 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int) (StreamInfo, err
 	var lastErr error
 
 	for _, q := range qualities {
-		endpoint := fmt.Sprintf("/tracks/%d/urlpostpaywall", trackID)
-		params := url.Values{}
-		params.Set("urlusagemode", "STREAM")
-		params.Set("audioquality", q)
-		params.Set("assetpresentation", "FULL")
-		params.Set("countryCode", c.Session.CountryCode)
-
-		client := c.GetAuthClient(ctx)
-		u := BaseURL + endpoint + "?" + params.Encode()
-		resp, err := client.Get(u)
+		info, err := c.streamURLForQuality(ctx, trackID, q)
 		if err != nil {
-			return StreamInfo{}, err
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		if resp.StatusCode != 200 {
-			body, _ := io.ReadAll(resp.Body)
-			lastErr = apiErr("get stream ("+q+")", resp.StatusCode, body)
+			lastErr = err
 			continue
 		}
-
-		var s StreamResponse
-		if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
-			return StreamInfo{}, err
-		}
-		if len(s.URLs) == 0 {
-			lastErr = fmt.Errorf("get stream (%s): response contained no URLs", q)
-			continue
-		}
-
-		streamURL := s.URLs[0]
-		base := strings.SplitN(streamURL, "?", 2)[0]
-		ext := ""
-		if i := strings.LastIndex(base, "."); i >= 0 {
-			ext = strings.ToLower(base[i+1:])
-		}
-		return StreamInfo{URL: streamURL, Ext: ext}, nil
+		return info, nil
 	}
 
 	if lastErr != nil {
 		return StreamInfo{}, fmt.Errorf("no stream available for track %d: %w", trackID, lastErr)
 	}
 	return StreamInfo{}, fmt.Errorf("no stream available for track %d", trackID)
+}
+
+// streamURLForQuality fetches the stream URL for a single audio-quality tier.
+// Pulled out of GetStreamURL so the response body is closed per attempt rather
+// than via a defer accumulated inside the quality-ladder loop.
+func (c *Client) streamURLForQuality(ctx context.Context, trackID int, q string) (StreamInfo, error) {
+	endpoint := fmt.Sprintf("/tracks/%d/urlpostpaywall", trackID)
+	params := url.Values{}
+	params.Set("urlusagemode", "STREAM")
+	params.Set("audioquality", q)
+	params.Set("assetpresentation", "FULL")
+	params.Set("countryCode", c.Session.CountryCode)
+
+	u := BaseURL + endpoint + "?" + params.Encode()
+	resp, err := c.authGet(ctx, u)
+	if err != nil {
+		return StreamInfo{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return StreamInfo{}, apiErr("get stream ("+q+")", resp.StatusCode, body)
+	}
+
+	var s StreamResponse
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		return StreamInfo{}, err
+	}
+	if len(s.URLs) == 0 {
+		return StreamInfo{}, fmt.Errorf("get stream (%s): response contained no URLs", q)
+	}
+
+	streamURL := s.URLs[0]
+	base := strings.SplitN(streamURL, "?", 2)[0]
+	ext := ""
+	if i := strings.LastIndex(base, "."); i >= 0 {
+		ext = strings.ToLower(base[i+1:])
+	}
+	return StreamInfo{URL: streamURL, Ext: ext}, nil
 }
 
 func (c *Client) GetFavorites(ctx context.Context, limit int) ([]Track, error) {
@@ -251,15 +317,14 @@ func (c *Client) GetFavorites(ctx context.Context, limit int) ([]Track, error) {
 	params.Set("order", "DATE")
 	params.Set("orderDirection", "DESC")
 
-	client := c.GetAuthClient(ctx)
 	u := BaseURL + endpoint + "?" + params.Encode()
-	resp, err := client.Get(u)
+	resp, err := c.authGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, apiErr("get favorites", resp.StatusCode, body)
 	}
@@ -270,8 +335,8 @@ func (c *Client) GetFavorites(ctx context.Context, limit int) ([]Track, error) {
 	}
 
 	tracks := make([]Track, len(res.Items))
-	for i, item := range res.Items {
-		tracks[i] = item.Item
+	for i := range res.Items {
+		tracks[i] = res.Items[i].Item
 	}
 	return tracks, nil
 }
@@ -281,15 +346,14 @@ func (c *Client) GetTrackRadio(ctx context.Context, trackID int) ([]Track, error
 	params.Set("limit", "100")
 	params.Set("countryCode", c.Session.CountryCode)
 
-	client := c.GetAuthClient(ctx)
 	u := fmt.Sprintf("%s/tracks/%d/radio?%s", BaseURL, trackID, params.Encode())
-	resp, err := client.Get(u)
+	resp, err := c.authGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, apiErr("get track radio", resp.StatusCode, body)
 	}
@@ -305,15 +369,14 @@ func (c *Client) GetAlbumTracks(ctx context.Context, albumID string) ([]Track, e
 	params := url.Values{}
 	params.Set("countryCode", c.Session.CountryCode)
 
-	client := c.GetAuthClient(ctx)
 	u := fmt.Sprintf("%s/albums/%s/tracks?%s", BaseURL, albumID, params.Encode())
-	resp, err := client.Get(u)
+	resp, err := c.authGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, apiErr("get album tracks", resp.StatusCode, body)
 	}
@@ -325,6 +388,133 @@ func (c *Client) GetAlbumTracks(ctx context.Context, albumID string) ([]Track, e
 	return res.Items, nil
 }
 
+// artistAlbumsPageLimit is the per-page album count requested when paginating
+// an artist's discography. artistAlbumsMaxPages caps the loop so a malformed
+// totalNumberOfItems can never spin forever.
+const (
+	artistAlbumsPageLimit = 50
+	artistAlbumsMaxPages  = 20 // up to 1000 albums
+)
+
+// GetArtistAlbums returns the artist's full discography, paginating through the
+// v1 /artists/{id}/albums endpoint until exhausted.
+func (c *Client) GetArtistAlbums(ctx context.Context, artistID int) ([]Album, error) {
+	var albums []Album
+	for page := range artistAlbumsMaxPages {
+		params := url.Values{}
+		params.Set("countryCode", c.Session.CountryCode)
+		params.Set("limit", strconv.Itoa(artistAlbumsPageLimit))
+		params.Set("offset", strconv.Itoa(page*artistAlbumsPageLimit))
+
+		u := fmt.Sprintf("%s/artists/%d/albums?%s", BaseURL, artistID, params.Encode())
+		resp, err := c.authGet(ctx, u)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			return nil, apiErr("get artist albums", resp.StatusCode, body)
+		}
+
+		var res artistAlbumsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+			_ = resp.Body.Close()
+			return nil, err
+		}
+		_ = resp.Body.Close()
+
+		albums = append(albums, res.Items...)
+
+		// Last page reached: a short page, or we've collected the reported total.
+		if len(res.Items) < artistAlbumsPageLimit ||
+			(res.TotalNumberOfItems > 0 && len(albums) >= res.TotalNumberOfItems) {
+			break
+		}
+	}
+	return albums, nil
+}
+
+// GetArtistTopTracks returns the artist's most popular tracks (up to limit).
+func (c *Client) GetArtistTopTracks(ctx context.Context, artistID, limit int) ([]Track, error) {
+	params := url.Values{}
+	params.Set("countryCode", c.Session.CountryCode)
+	params.Set("limit", strconv.Itoa(limit))
+
+	u := fmt.Sprintf("%s/artists/%d/toptracks?%s", BaseURL, artistID, params.Encode())
+	resp, err := c.authGet(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, apiErr("get artist top tracks", resp.StatusCode, body)
+	}
+
+	var res artistTopTracksResponse
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+	for i := range res.Items {
+		res.Items[i].normalizeArtist()
+	}
+	return res.Items, nil
+}
+
+// artistAllTracksConcurrency bounds how many album track-list requests run at
+// once in GetArtistAllTracks, so a deep discography doesn't open hundreds of
+// connections at the same time.
+const artistAllTracksConcurrency = 8
+
+// GetArtistAllTracks collects every track across all of the artist's albums.
+// Albums are fetched concurrently (bounded by artistAllTracksConcurrency); an
+// album that fails to load (e.g. region-locked) is skipped rather than aborting
+// the whole list. The result is flattened in album order and deduped by track ID
+// so songs that appear on both an album and a single/compilation are not repeated.
+func (c *Client) GetArtistAllTracks(ctx context.Context, artistID int) ([]Track, error) {
+	albums, err := c.GetArtistAlbums(ctx, artistID)
+	if err != nil {
+		return nil, err
+	}
+	if len(albums) == 0 {
+		return nil, nil
+	}
+
+	perAlbum := make([][]Track, len(albums))
+	sem := make(chan struct{}, artistAllTracksConcurrency)
+	var wg sync.WaitGroup
+	for i, alb := range albums {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(idx, albumID int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			ts, err := c.GetAlbumTracks(ctx, strconv.Itoa(albumID))
+			if err != nil {
+				return // skip this album
+			}
+			perAlbum[idx] = ts
+		}(i, alb.ID)
+	}
+	wg.Wait()
+
+	var all []Track
+	seen := make(map[int]bool)
+	for _, ts := range perAlbum {
+		for i := range ts {
+			if seen[ts[i].ID] {
+				continue
+			}
+			seen[ts[i].ID] = true
+			all = append(all, ts[i])
+		}
+	}
+	return all, nil
+}
+
 func (c *Client) AddFavorite(ctx context.Context, trackID int) error {
 	endpoint := fmt.Sprintf("/users/%d/favorites/tracks", c.Session.UserID)
 	query := url.Values{}
@@ -333,18 +523,13 @@ func (c *Client) AddFavorite(ctx context.Context, trackID int) error {
 	body := url.Values{}
 	body.Set("trackId", strconv.Itoa(trackID))
 
-	client := c.GetAuthClient(ctx)
-	resp, err := client.Post(
-		BaseURL+endpoint+"?"+query.Encode(),
-		"application/x-www-form-urlencoded",
-		strings.NewReader(body.Encode()),
-	)
+	resp, err := c.authPostForm(ctx, BaseURL+endpoint+"?"+query.Encode(), body)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != 200 && resp.StatusCode != 201 {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
 		return apiErr("add favorite", resp.StatusCode, b)
 	}
@@ -356,26 +541,22 @@ func (c *Client) RemoveFavorite(ctx context.Context, trackID int) error {
 	params := url.Values{}
 	params.Set("countryCode", c.Session.CountryCode)
 
-	client := c.GetAuthClient(ctx)
-	req, err := newDeleteRequest(BaseURL + endpoint + "?" + params.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		BaseURL+endpoint+"?"+params.Encode(), http.NoBody)
 	if err != nil {
 		return err
 	}
-	resp, err := client.Do(req)
+	resp, err := c.GetAuthClient(ctx).Do(req)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != 200 && resp.StatusCode != 204 {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
 		return apiErr("remove favorite", resp.StatusCode, body)
 	}
 	return nil
-}
-
-func newDeleteRequest(u string) (*http.Request, error) {
-	return http.NewRequest(http.MethodDelete, u, nil)
 }
 
 func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
@@ -383,15 +564,14 @@ func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
 	params.Set("countryCode", c.Session.CountryCode)
 	params.Set("include", "myMixes")
 
-	client := c.GetAuthClient(ctx)
 	u := BaseURLV2 + "/userRecommendations/me/relationships/myMixes?" + params.Encode()
-	resp, err := client.Get(u)
+	resp, err := c.authGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, apiErr("get mixes", resp.StatusCode, body)
 	}
@@ -439,15 +619,14 @@ func (c *Client) GetMixTracks(ctx context.Context, mixID string) ([]Track, error
 	params.Set("countryCode", c.Session.CountryCode)
 	params.Set("include", "items")
 
-	client := c.GetAuthClient(ctx)
 	u := BaseURLV2 + "/playlists/" + mixID + "/relationships/items?" + params.Encode()
-	resp, err := client.Get(u)
+	resp, err := c.authGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, apiErr("get mix tracks", resp.StatusCode, body)
 	}
@@ -505,8 +684,8 @@ func (c *Client) GetMixTracks(ctx context.Context, mixID string) ([]Track, error
 	// Sort by original playlist position.
 	slices.SortFunc(available, func(a, b indexedTrack) int { return a.idx - b.idx })
 	ordered := make([]Track, len(available))
-	for i, it := range available {
-		ordered[i] = it.track
+	for i := range available {
+		ordered[i] = available[i].track
 	}
 	return ordered, nil
 }

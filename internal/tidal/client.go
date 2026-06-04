@@ -14,8 +14,12 @@ import (
 )
 
 const (
-	ClientID     = "fX2JxdmntZWK0ixT"
-	ClientSecret = "1Nn9AfDAjxrgJFJbKNWLeAyKGVGmINuXPPLHVXAvxAg="
+	ClientID = "fX2JxdmntZWK0ixT"
+	// ClientSecret is the public client secret baked into the official Tidal
+	// app; it is not a user credential. Distributing it is required for the
+	// device-flow login to work, so the gosec hardcoded-credentials check is
+	// suppressed here.
+	ClientSecret = "1Nn9AfDAjxrgJFJbKNWLeAyKGVGmINuXPPLHVXAvxAg=" //nolint:gosec // G101: public OAuth client secret, not a user credential
 	AuthURL      = "https://auth.tidal.com/v1/oauth2"
 	BaseURL      = "https://api.tidal.com/v1"
 	BaseURLV2    = "https://openapi.tidal.com/v2"
@@ -64,7 +68,14 @@ func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) 
 	data.Set("client_id", ClientID)
 	data.Set("scope", "r_usr w_usr w_sub")
 
-	resp, err := httpClient.PostForm(c.Oauth.Endpoint.AuthURL, data)
+	daReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Oauth.Endpoint.AuthURL,
+		strings.NewReader(data.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	daReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := httpClient.Do(daReq)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +113,7 @@ func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) 
 
 	// 3. Fetch Session Info to get UserID and CountryCode reliably
 	// Tidal provides a /sessions endpoint that returns the current session info
-	req, err := http.NewRequestWithContext(ctx, "GET", BaseURL+"/sessions", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, BaseURL+"/sessions", http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +131,7 @@ func (c *Client) AuthenticateInteractive(ctx context.Context) (*Session, error) 
 	}
 	if err := json.NewDecoder(sResp.Body).Decode(&sessionInfo); err != nil {
 		// Fallback to token extras if session endpoint fails
-		if user, ok := token.Extra("user").(map[string]interface{}); ok {
+		if user, ok := token.Extra("user").(map[string]any); ok {
 			if id, ok := user["id"].(float64); ok {
 				sessionInfo.UserID = int(id)
 			}

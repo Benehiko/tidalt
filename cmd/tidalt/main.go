@@ -63,6 +63,7 @@ func loadSession(ctx context.Context) (*tidal.Client, *store.SecretsStore, tidal
 	vault := store.NewSecretsStore(readPassphrase)
 
 	var session tidal.Session
+	//nolint:contextcheck // store.SecretsStore.LoadSession does not accept a context; nothing to thread
 	err := vault.LoadSession(&session)
 	if err != nil || session.CountryCode == "" {
 		if err == nil {
@@ -80,6 +81,7 @@ func loadSession(ctx context.Context) (*tidal.Client, *store.SecretsStore, tidal
 			os.Exit(1)
 		}
 		session = *newSession
+		//nolint:contextcheck // store.SecretsStore.SaveSession does not accept a context; nothing to thread
 		if saveErr := vault.SaveSession(session); saveErr != nil {
 			fmt.Printf("Failed to save session: %v\n", saveErr)
 			os.Exit(1)
@@ -92,9 +94,17 @@ func loadSession(ctx context.Context) (*tidal.Client, *store.SecretsStore, tidal
 }
 
 func main() {
+	if err := dispatch(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// dispatch routes the CLI subcommand and returns any error so main can exit
+// with code 1 only after all deferred cleanup in the called function has run.
+func dispatch() error {
 	if len(os.Args) < 2 {
-		runTUI("")
-		return
+		return runTUI("")
 	}
 
 	switch os.Args[1] {
@@ -104,25 +114,28 @@ func main() {
 		} else {
 			runSetup()
 		}
+		return nil
 	case "play":
 		url := ""
 		if len(os.Args) > 2 {
 			url = os.Args[2]
 		}
-		runPlay(url)
+		return runPlay(url)
 	case "daemon":
-		runDaemon()
+		return runDaemon()
 	case "logout":
 		runLogout()
+		return nil
 	default:
 		// Treat os.Args[1] as an optional tidal:// or https://tidal.com/ URL
 		// (passed by the OS when the user clicks "Open in desktop app").
-		runTUI(os.Args[1])
+		return runTUI(os.Args[1])
 	}
 }
 
 // runTUI starts the full interactive TUI, optionally pre-queuing a URL.
-func runTUI(openURL string) {
+// It returns an error so the caller can exit after deferred cleanup runs.
+func runTUI(openURL string) error {
 	ctx, stop := signalContext()
 	defer stop()
 
@@ -136,8 +149,7 @@ func runTUI(openURL string) {
 		clientVault := store.NewClientStore(readPassphrase)
 		mprisClient, err := mpris.NewClient()
 		if err != nil {
-			fmt.Printf("Failed to connect to running instance: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to connect to running instance: %w", err)
 		}
 		defer mprisClient.Close()
 		p := tea.NewProgram(
@@ -145,10 +157,9 @@ func runTUI(openURL string) {
 			tea.WithAltScreen(),
 		)
 		if _, err := p.Run(); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
-		return
+		return nil
 	}
 	if mprisErr != nil {
 		fmt.Printf("MPRIS unavailable: %v\n", mprisErr)
@@ -156,7 +167,7 @@ func runTUI(openURL string) {
 
 	p := tea.NewProgram(ui.InitialModel(ctx, client, vault, mprisServer, openURL), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
+		return err
 	}
+	return nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"os"
@@ -18,16 +19,16 @@ var desktopFileContent []byte
 func runSetup() {
 	appDir := filepath.Join(homeDir(), ".local", "share", "applications")
 
-	step("Creating directory %s", appDir)
-	if err := os.MkdirAll(appDir, 0o755); err != nil {
-		fatal("mkdir %s: %v", appDir, err)
+	stepf("Creating directory %s", appDir)
+	if err := os.MkdirAll(appDir, 0o700); err != nil {
+		fatalf("mkdir %s: %v", appDir, err)
 	}
 
 	// Resolve the full path to the tidalt binary so the desktop file works
 	// even when the DE launches apps with a minimal PATH.
 	self, err := os.Executable()
 	if err != nil {
-		fatal("cannot determine executable path: %v", err)
+		fatalf("cannot determine executable path: %v", err)
 	}
 
 	// Substitute the bare "tidalt" in the Exec line with the absolute path.
@@ -35,9 +36,9 @@ func runSetup() {
 	desktop = strings.ReplaceAll(desktop, "Exec=tidalt ", "Exec="+self+" ")
 
 	destPath := filepath.Join(appDir, "tidalt.desktop")
-	step("Writing %s (Exec=%s play %%u)", destPath, self)
-	if err := os.WriteFile(destPath, []byte(desktop), 0o644); err != nil {
-		fatal("write %s: %v", destPath, err)
+	stepf("Writing %s (Exec=%s play %%u)", destPath, self)
+	if err := os.WriteFile(destPath, []byte(desktop), 0o600); err != nil {
+		fatalf("write %s: %v", destPath, err)
 	}
 
 	run(false, "xdg-mime", "install", "--novendor", "--mode", "user", destPath)
@@ -50,7 +51,7 @@ func runSetup() {
 }
 
 // step prints a human-readable description of the next action.
-func step(format string, args ...any) {
+func stepf(format string, args ...any) {
 	fmt.Printf("  -> %s\n", fmt.Sprintf(format, args...))
 }
 
@@ -59,12 +60,15 @@ func step(format string, args ...any) {
 // hard failure (used for tools that may not be installed on all systems).
 func run(optional bool, name string, args ...string) {
 	display := name
+	var displaySb62 strings.Builder
 	for _, a := range args {
-		display += " " + a
+		displaySb62.WriteString(" " + a)
 	}
-	step("$ %s", display)
+	display += displaySb62.String()
+	stepf("$ %s", display)
 
-	cmd := exec.Command(name, args...)
+	//nolint:gosec // G204: name and args are hardcoded literals from setup call sites (systemctl, xdg-mime, update-desktop-database), never user input
+	cmd := exec.CommandContext(context.Background(), name, args...)
 	// Capture stderr so noise from helper tools (e.g. "qtpaths: command not
 	// found" from xdg-mime on KDE without qt6-tools) doesn't alarm the user.
 	// We print it ourselves only on failure.
@@ -82,13 +86,13 @@ func run(optional bool, name string, args ...string) {
 			return
 		}
 		if msg != "" {
-			fatal("%s: %s", display, msg)
+			fatalf("%s: %s", display, msg)
 		}
-		fatal("%s: %v", display, err)
+		fatalf("%s: %v", display, err)
 	}
 }
 
-func fatal(format string, args ...any) {
+func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "error: %s\n", fmt.Sprintf(format, args...))
 	os.Exit(1)
 }
@@ -96,7 +100,7 @@ func fatal(format string, args ...any) {
 func homeDir() string {
 	h, err := os.UserHomeDir()
 	if err != nil {
-		fatal("cannot determine home directory: %v", err)
+		fatalf("cannot determine home directory: %v", err)
 	}
 	return h
 }

@@ -26,7 +26,7 @@ func init() {
 	_ = os.MkdirAll(logDir, 0o700)
 
 	logFile := filepath.Join(logDir, "tidalt-"+time.Now().Format("20060102-150405")+".log")
-	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // G304: log path is computed internally, not user-supplied
 	if err != nil {
 		// Fall back to stderr if the file can't be opened.
 		L = slog.New(&redactHandler{slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})})

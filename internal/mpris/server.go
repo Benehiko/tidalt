@@ -378,6 +378,8 @@ func (a *tidalApp) SetDevice(hwName string) *dbus.Error {
 }
 
 // GetState returns the current playback state for client instances.
+//
+//nolint:gocritic // multiple D-Bus property values are returned together by design
 func (a *tidalApp) GetState() (string, string, string, float64, float64, float64, string, string, *dbus.Error) {
 	ps := a.state.get()
 	return ps.CurrentTrackJSON, ps.PlaylistJSON, ps.PlaybackStatus, ps.Position, ps.Duration, ps.Volume, ps.Device, ps.ShuffleMode, nil

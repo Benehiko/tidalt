@@ -4,7 +4,7 @@ This project is a high-fidelity Tidal terminal client written in Go (1.26+), foc
 
 ## Engineering Standards
 
-- **Go Version:** 1.26.1 or higher.
+- **Go Version:** 1.26.4 or higher.
 - **Linting:** We use `golangci-lint` (v2.11.3+).
 - **Formatting:** We use `gofumpt` for stricter formatting and `goimports` for import management.
 - **Validation:** ALWAYS run `golangci-lint run` before committing. The configuration is managed in `.golangci.yml` (version 2).

@@ -1,5 +1,6 @@
 tidal-tui
 tidal-cache.db
+/tidalt
 tidalt-linux-*
 /debian/
 dist/

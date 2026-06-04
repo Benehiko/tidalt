@@ -1,13 +1,33 @@
 # syntax=docker/dockerfile:1
 
-# ── Build stage: compile the binary ──────────────────────────────────────────
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
+# ── FFmpeg stage: build a minimal, static FFmpeg for the target arch ──────────
+# Only the FLAC/AAC/ALAC/PCM decoders and their demuxers are enabled, so the
+# resulting static archives are small and free of the huge transitive codec
+# dependency chain that the distro's shared FFmpeg drags in. Linking these
+# statically makes the final binary portable across distributions regardless of
+# their FFmpeg version (the FFmpeg .so soname is not stable across releases).
+FROM --platform=$BUILDPLATFORM debian:trixie-slim AS ffmpeg
+ARG TARGETARCH
+
+RUN dpkg --add-architecture ${TARGETARCH} && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential nasm pkg-config curl xz-utils ca-certificates \
+        crossbuild-essential-${TARGETARCH} && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY packaging/build-static-ffmpeg.sh /build-static-ffmpeg.sh
+RUN bash /build-static-ffmpeg.sh /opt/ffmpeg ${TARGETARCH}
+
+# ── Build stage: compile the binary, statically linking the FFmpeg above ──────
+FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS build
 
 ARG TARGETARCH
 ARG VERSION
 
 WORKDIR /src
 COPY . .
+COPY --from=ffmpeg /opt/ffmpeg /opt/ffmpeg
 
 RUN dpkg --add-architecture ${TARGETARCH} && \
     apt-get update && \
@@ -22,6 +42,7 @@ RUN case "${TARGETARCH}" in \
         *) echo "unsupported arch: ${TARGETARCH}" && exit 1 ;; \
     esac && \
     CGO_ENABLED=1 CC=${CC} GOARCH=${TARGETARCH} go build \
+        -tags staticav \
         -trimpath \
         -buildmode=pie \
         -ldflags "-s -w -linkmode=external -X main.version=v${VERSION}" \
@@ -35,7 +56,8 @@ ARG TARGETARCH
 ARG VERSION
 
 # dpkg-deb is part of dpkg (already installed in debian:stable-slim).
-# We only need dpkg-shlibdeps → libasound2 for shlibs resolution.
+# We only need dpkg-shlibdeps → libasound2 for shlibs resolution. FFmpeg is
+# linked statically, so it is intentionally absent from Depends.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libasound2t64 && \
     rm -rf /var/lib/apt/lists/*

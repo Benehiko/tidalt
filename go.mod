@@ -1,6 +1,6 @@
 module github.com/Benehiko/tidalt/v3
 
-go 1.26.1
+go 1.26.4
 
 require (
 	github.com/atotto/clipboard v0.1.4

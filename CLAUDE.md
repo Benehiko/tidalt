@@ -16,7 +16,7 @@ Entry point. Handles signal setup, session load/restore from the secrets store, 
 ### `internal/tidal`
 Tidal API client.
 - `client.go` — OAuth2 device-flow authentication, token refresh, authenticated HTTP client
-- `api.go` — REST calls: favorites, search, track lookup, stream URL (quality ladder: HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW), mixes, mix tracks
+- `api.go` — REST calls: favorites, search, track lookup, stream URL (quality ladder: HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW), mixes, mix tracks, artist albums/top-tracks/all-tracks
 
 ### `internal/player`
 Bit-perfect FLAC playback via CGO + libasound.
@@ -25,7 +25,7 @@ Bit-perfect FLAC playback via CGO + libasound.
 - Format preference for 16-bit sources: S32_LE → S16_LE → S24_3LE → S24_LE (S32_LE first because some DACs, e.g. CS43198-based Hidizs S9 Pro Plus, have a broken S16_LE USB endpoint)
 - Format preference for 24-bit sources: S24_3LE → S24_LE → S32_LE
 - Acquires `org.freedesktop.ReserveDevice1.Audio{N}` on D-Bus before opening the device, asking PipeWire to release if it holds the reservation
-- Decodes FLAC in-flight from the HTTP stream using `github.com/mewkiz/flac`
+- Demuxes and decodes the HTTP stream in-flight via FFmpeg (libavformat/libavcodec/libswresample, CGO) — FLAC, AAC/mp4, and ALAC — resampling to S32LE. A custom AVIO callback feeds bytes straight from the HTTP response. FFmpeg is linked dynamically for local/dev/CI builds (needs the distro's libav*-dev headers); the official distro packages (`packaging/`) bundle a minimal static FFmpeg built from source, selected with the `staticav` build tag
 - Volume, pause, and position tracking via atomics
 - Auto-detects known DACs (Hidizs S9 Pro, Hidizs S9 Pro Plus "Martha", Focusrite Scarlett Solo) from `/proc/asound/cards`
 
@@ -36,7 +36,8 @@ Persistent storage.
 
 ### `internal/ui`
 BubbleTea TUI model (Model/Update/View).
-- Four states: `StateBrowse`, `StateMixes`, `StateSearch`, `StateDeviceSelect`
+- Five states: `StateBrowse`, `StateMixes`, `StateSearch`, `StateDeviceSelect`, `StateArtistAlbums`
 - Scrollable track and mix lists with a visible window helper
+- Artist view (`StateArtistAlbums`): opened with `a` on any track; lists the artist's albums plus "Play all tracks" / "Top tracks" entries, loading the chosen tracks into the browse queue
 - Progress bar with playback position, volume display, and device label
 - Auto-advances to the next track in the queue when playback finishes

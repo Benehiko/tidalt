@@ -44,10 +44,7 @@ func kittyRowSequences(img image.Image, cols, rows int) []string {
 
 	const targetPx = 320
 
-	rowPx := targetPx / rows
-	if rowPx < 1 {
-		rowPx = 1
-	}
+	rowPx := max(targetPx/rows, 1)
 
 	// Scale the full image to 320 × (rowPx*rows) so each slice is uniform.
 	scaledH := rowPx * rows
@@ -79,10 +76,7 @@ func kittyRowSequences(img image.Image, cols, rows int) []string {
 func kittyChunked(encoded string, cols int) string {
 	var sb strings.Builder
 	for i := 0; i < len(encoded); i += kittyChunkSize {
-		end := i + kittyChunkSize
-		if end > len(encoded) {
-			end = len(encoded)
-		}
+		end := min(i+kittyChunkSize, len(encoded))
 		chunk := encoded[i:end]
 		more := 1
 		if end >= len(encoded) {

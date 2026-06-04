@@ -6,7 +6,7 @@ pkgdesc="Tidal music player for Linux — bit-perfect FLAC via ALSA, MPRIS2, dae
 arch=('x86_64' 'aarch64')
 url="https://github.com/Benehiko/tidalt"
 license=('Apache-2.0')
-depends=('alsa-lib' 'dbus')
+depends=('alsa-lib' 'ffmpeg' 'dbus')
 makedepends=('go>=1.26')
 optdepends=(
     'playerctl: control playback from the command line'

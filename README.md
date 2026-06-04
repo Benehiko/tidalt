@@ -97,6 +97,7 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 ## Features
 
 - Browse favorites and Daily Mixes
+- Artist view — from any track, browse the artist's full discography and play everything, their top tracks, or a single album
 - Search tracks by name or paste a Tidal track URL
 - Song radio — load a playlist of similar tracks for any song
 - Shuffle (Fisher-Yates pre-shuffle or random pick)
@@ -127,12 +128,13 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 | `→`            | Seek forward 10 seconds                      |
 | `s`            | Cycle shuffle mode (Off → Shuffle → Random)  |
 | `r`            | Load radio playlist for selected track       |
+| `a`            | Open artist view for the selected track      |
 | `f`            | Toggle favorite on selected track            |
 | `9`            | Volume down 5%                               |
 | `0`            | Volume up 5%                                 |
 | `c`            | Copy current track link to clipboard         |
 | `d`            | Open output device selector                  |
-| `Esc`          | Close device selector                        |
+| `Esc`          | Close device selector / artist view          |
 | `q` / `Ctrl+C` | Quit                                         |
 
 ### Global shortcuts (MPRIS2)

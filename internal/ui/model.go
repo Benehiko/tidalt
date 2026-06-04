@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"math/rand/v2"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,9 +50,12 @@ const (
 	StateMixes
 	StateSearch
 	StateDeviceSelect
+	StateArtistAlbums // list of an artist's albums + synthetic quick-play entries
 )
 
+//nolint:recvcheck // tea.Model requires value-receiver Init/Update/View; helper methods mutate via pointer receiver
 type Model struct {
+	//nolint:containedctx // the long-lived TUI model holds the app context for command goroutines
 	ctx    context.Context
 	client *tidal.Client
 	store  *store.SecretsStore
@@ -70,6 +74,14 @@ type Model struct {
 	searchTracks  []tidal.Track
 	searchCursor  int
 	searchLoading bool
+
+	// Artist view — the selected artist's albums plus two synthetic quick-play
+	// rows ("Play all tracks", "Top tracks"). prevState (below) is reused for Esc.
+	artistID      int // 0 = none
+	artistName    string
+	artistAlbums  []tidal.Album
+	artistCursor  int
+	artistLoading bool
 
 	// Terminal size
 	width  int
@@ -241,11 +253,18 @@ type (
 	searchResultsMsg   []tidal.Track
 	openURLTracksMsg   []tidal.Track // tracks resolved from a startup tidal:// URL
 	cachedPlaylistMsg  []tidal.Track // playlist restored from bbolt on startup
-	errMsg             error
-	clearErrMsg        struct{}
-	tickMsg            time.Time
-	barTickMsg         time.Time
-	nowPlayingMsg      struct {
+	// artistAlbumsMsg carries an artist's discography after the user opens the
+	// artist view with "a".
+	artistAlbumsMsg struct {
+		artistID   int
+		artistName string
+		albums     []tidal.Album
+	}
+	errMsg        error
+	clearErrMsg   struct{}
+	tickMsg       time.Time
+	barTickMsg    time.Time
+	nowPlayingMsg struct {
 		done  <-chan struct{}
 		track *tidal.Track // refreshed track metadata (may be nil)
 		gen   uint64       // skip generation that spawned this command
@@ -346,7 +365,7 @@ func (m *Model) nextIndex() int {
 		if len(candidates) == 0 {
 			return -1
 		}
-		return candidates[rand.IntN(len(candidates))]
+		return candidates[rand.IntN(len(candidates))] //nolint:gosec // G404: playlist shuffle does not need crypto-grade randomness
 	default:
 		// ShuffleOff and ShuffleFisherYates both advance linearly through
 		// the (possibly pre-shuffled) slice.
@@ -378,8 +397,8 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 		if m.localPlaylist && len(m.tracks) > 0 {
 			// Find the index of this track in the local playlist.
 			idx := 0
-			for i, t := range m.tracks {
-				if t.ID == track.ID {
+			for i := range m.tracks {
+				if m.tracks[i].ID == track.ID {
 					idx = i
 					break
 				}
@@ -421,7 +440,7 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 		freshCh := make(chan freshResult, 1)
 		if track.Album.Cover == "" {
 			go func() {
-				t, err := client.GetTrack(ctx, fmt.Sprintf("%d", track.ID))
+				t, err := client.GetTrack(ctx, strconv.Itoa(track.ID))
 				freshCh <- freshResult{t, err}
 			}()
 		} else {
@@ -476,8 +495,8 @@ func resolveQuery(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 	// tidal://track/12345  →  tidal.com/track/12345
 	// tidal://album/67890  →  tidal.com/album/67890
 	// tidal://mix/abcdef   →  tidal.com/mix/abcdef
-	if strings.HasPrefix(query, "tidal://") {
-		query = "tidal.com/" + strings.TrimPrefix(query, "tidal://")
+	if after, ok := strings.CutPrefix(query, "tidal://"); ok {
+		query = "tidal.com/" + after
 	}
 
 	if strings.Contains(query, "tidal.com/") && strings.Contains(query, "/track/") {
@@ -679,17 +698,11 @@ func (m *Model) regenKittyRows() {
 	if m.state == StateSearch {
 		overhead += 2
 	}
-	listHeight := m.height - overhead
-	if listHeight < 1 {
-		listHeight = 1
+	if m.state == StateArtistAlbums {
+		overhead++ // extra "Artist: <name>" footer line
 	}
-	imgRows := listHeight - 4
-	if imgRows < 2 {
-		imgRows = 2
-	}
-	if imgRows > listHeight {
-		imgRows = listHeight
-	}
+	listHeight := max(m.height-overhead, 1)
+	imgRows := min(max(listHeight-4, 2), listHeight)
 	m.kittyRows = kittyRowSequences(m.coverImage, panelW, imgRows)
 }
 
@@ -723,9 +736,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "esc":
-			if m.state == StateDeviceSelect {
+			switch m.state {
+			case StateDeviceSelect:
 				m.state = m.prevState
 				m.cursor = 0
+			case StateArtistAlbums:
+				// Return to wherever "a" was pressed, keeping the cursor there.
+				m.state = m.prevState
+			default:
+				// other states: Esc has no effect
 			}
 
 		case "d":
@@ -802,7 +821,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == StateSearch && len(m.searchTracks) > 0 {
 				track := m.searchTracks[m.searchCursor]
 				_ = m.store.CacheTrack(track.ID, track)
-				return m, m.playTrackCmd(track)
+				cmd := m.playTrackCmd(track)
+				return m, cmd
 			}
 			if m.state == StateMixes && len(m.mixes) > 0 {
 				mix := m.mixes[m.cursor]
@@ -814,10 +834,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return tracksMsg(tracks)
 				}
 			}
+			if m.state == StateArtistAlbums {
+				// Rows 0 and 1 are synthetic quick-play entries; rows 2+ are
+				// real albums (m.artistAlbums[cursor-2]). All paths load the
+				// tracks into the queue via tracksMsg without auto-playing.
+				artistID := m.artistID
+				switch m.artistCursor {
+				case 0: // ▶ Play all tracks
+					m.artistLoading = true
+					return m, func() tea.Msg {
+						tracks, err := m.client.GetArtistAllTracks(m.ctx, artistID)
+						if err != nil {
+							return errMsg(err)
+						}
+						return tracksMsg(tracks)
+					}
+				case 1: // ★ Top tracks
+					return m, func() tea.Msg {
+						tracks, err := m.client.GetArtistTopTracks(m.ctx, artistID, 100)
+						if err != nil {
+							return errMsg(err)
+						}
+						return tracksMsg(tracks)
+					}
+				default:
+					if idx := m.artistCursor - 2; idx >= 0 && idx < len(m.artistAlbums) {
+						albumID := strconv.Itoa(m.artistAlbums[idx].ID)
+						return m, func() tea.Msg {
+							tracks, err := m.client.GetAlbumTracks(m.ctx, albumID)
+							if err != nil {
+								return errMsg(err)
+							}
+							return tracksMsg(tracks)
+						}
+					}
+				}
+			}
 			if len(m.tracks) > 0 {
 				track := m.tracks[m.cursor]
 				_ = m.store.CacheTrack(track.ID, track)
-				return m, m.playTrackCmd(track)
+				cmd := m.playTrackCmd(track)
+				return m, cmd
 			}
 
 		case "left":
@@ -841,26 +898,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// At top of results — move focus back to the search input.
 					m.searchInput.Focus()
 				}
+			} else if m.state == StateArtistAlbums {
+				if m.artistCursor > 0 {
+					m.artistCursor--
+				}
 			} else if m.cursor > 0 {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.state == StateSearch {
+			switch m.state {
+			case StateSearch:
 				if m.searchInput.Focused() {
 					// Move focus from input to the first result.
 					m.searchInput.Blur()
 				} else if m.searchCursor < len(m.searchTracks)-1 {
 					m.searchCursor++
 				}
-			} else {
-				max := len(m.tracks)
+			case StateArtistAlbums:
+				// +2 for the two synthetic quick-play rows.
+				if m.artistCursor < len(m.artistAlbums)+2-1 {
+					m.artistCursor++
+				}
+			default:
+				maxIdx := len(m.tracks)
 				switch m.state {
 				case StateMixes:
-					max = len(m.mixes)
+					maxIdx = len(m.mixes)
 				case StateDeviceSelect:
-					max = len(m.devices)
+					maxIdx = len(m.devices)
+				default:
+					// other states: count tracks (default above)
 				}
-				if m.cursor < max-1 {
+				if m.cursor < maxIdx-1 {
 					m.cursor++
 				}
 			}
@@ -893,7 +962,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if track != nil {
 					_ = m.store.CacheTrack(track.ID, *track)
-					return m, m.playTrackCmd(*track)
+					cmd := m.playTrackCmd(*track)
+					return m, cmd
 				}
 			} else {
 				_ = m.player.Pause()
@@ -963,7 +1033,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.currPos = 0
 					m.duration = 0
 					_ = m.store.CacheTrack(track.ID, track)
-					return m, m.playNextTrackCmd(track)
+					cmd := m.playNextTrackCmd(track)
+					return m, cmd
 				}
 			}
 
@@ -977,7 +1048,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.currPos = 0
 					m.duration = 0
 					_ = m.store.CacheTrack(track.ID, track)
-					return m, m.playTrackCmd(track)
+					cmd := m.playTrackCmd(track)
+					return m, cmd
 				}
 			}
 
@@ -1007,6 +1079,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+		case "a":
+			// Open the artist view for the track under the cursor. Falls back to
+			// the currently playing track when the active list has no selection.
+			var srcTrack *tidal.Track
+			if m.state == StateSearch && len(m.searchTracks) > 0 {
+				t := m.searchTracks[m.searchCursor]
+				srcTrack = &t
+			} else if (m.state == StateBrowse || m.state == StateArtistAlbums) && len(m.tracks) > 0 {
+				t := m.tracks[m.cursor]
+				srcTrack = &t
+			}
+			if srcTrack == nil && m.currentTrack != nil {
+				srcTrack = m.currentTrack
+			}
+			if srcTrack != nil && srcTrack.Artist.ID != 0 {
+				artistID := srcTrack.Artist.ID
+				artistName := srcTrack.Artist.Name
+				m.prevState = m.state // so Esc returns here
+				m.artistLoading = true
+				return m, func() tea.Msg {
+					albums, err := m.client.GetArtistAlbums(m.ctx, artistID)
+					if err != nil {
+						return errMsg(err)
+					}
+					return artistAlbumsMsg{artistID: artistID, artistName: artistName, albums: albums}
+				}
+			}
+
 		case "c":
 			if m.currentTrack != nil {
 				link := fmt.Sprintf("https://tidal.com/track/%d", m.currentTrack.ID)
@@ -1023,10 +1123,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		// Reserve space for the "  [MM:SS / MM:SS]" suffix (18 chars) plus indent (2) plus margin.
-		barWidth := msg.Width - 22
-		if barWidth < 10 {
-			barWidth = 10
-		}
+		barWidth := max(msg.Width-22, 10)
 		m.progress = progress.New(progress.WithDefaultGradient(), progress.WithWidth(barWidth))
 		m.regenKittyRows()
 
@@ -1119,7 +1216,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(tracks) != len(m.tracks) || (len(tracks) > 0 && tracks[0].ID != m.tracks[0].ID) {
 					m.tracksOrder = tracks
 					m.applyShuffle()
-					m.state = StateBrowse
+					// Don't yank the user out of a view they're actively browsing
+					// (search results, artist view, device select). The updated
+					// playlist is still applied underneath, so it's there when they
+					// Tab back to Browse.
 				}
 			}
 		}
@@ -1178,7 +1278,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.skipGen {
 			break // stale — a newer skip superseded this delayed advance
 		}
-		return m, m.playNextTrackCmd(msg.track)
+		cmd := m.playNextTrackCmd(msg.track)
+		return m, cmd
 
 	case trackDoneMsg:
 		if msg.gen != m.skipGen {
@@ -1194,7 +1295,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currPos = 0
 				m.duration = 0
 				_ = m.store.CacheTrack(track.ID, track)
-				return m, m.playNextTrackCmd(track)
+				cmd := m.playNextTrackCmd(track)
+				return m, cmd
 			}
 			m.isPlaying = false
 			m.pushState()
@@ -1206,8 +1308,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyShuffle()
 			m.playlistRestored = true
 			if lastID, err := m.store.LoadLastTrackID(); err == nil && lastID != 0 {
-				for i, t := range m.tracks {
-					if t.ID == lastID {
+				for i := range m.tracks {
+					if m.tracks[i].ID == lastID {
 						m.cursor = i
 						break
 					}
@@ -1222,8 +1324,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case favoritesLoadedMsg:
 		tracks := []tidal.Track(msg)
 		// Always update the favorites map so ♥ indicators work.
-		for _, t := range tracks {
-			m.favorites[t.ID] = true
+		for i := range tracks {
+			m.favorites[tracks[i].ID] = true
 		}
 		// Only replace the track list with favorites when no playlist was
 		// restored from cache — otherwise we'd clobber the user's last session.
@@ -1281,13 +1383,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Auto-play the first track.
 		track := m.tracks[0]
 		_ = m.store.CacheTrack(track.ID, track)
-		return m, m.playTrackCmd(track)
+		cmd := m.playTrackCmd(track)
+		return m, cmd
 
 	case mixesMsg:
 		m.mixes = msg
 
+	case artistAlbumsMsg:
+		m.artistID = msg.artistID
+		m.artistName = msg.artistName
+		m.artistAlbums = msg.albums
+		m.artistCursor = 0
+		m.artistLoading = false
+		m.state = StateArtistAlbums
+
 	case errMsg:
 		m.errText = msg.Error()
+		// Clear the artist-view spinner if a fetch failed while loading it,
+		// otherwise it would hang on "Loading artist...".
+		m.artistLoading = false
 		return m, tea.Tick(5*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 
 	case clearErrMsg:
@@ -1307,7 +1421,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_ = m.store.SavePlaylist(m.tracks)
 		track := m.tracks[idx]
 		_ = m.store.CacheTrack(track.ID, track)
-		return m, m.playTrackCmd(track)
+		cmd := m.playTrackCmd(track)
+		return m, cmd
 
 	case mprisMsg:
 		ev := mpris.Event(msg)
@@ -1348,7 +1463,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			trackID := ev.TrackID
 			return m, tea.Batch(
 				func() tea.Msg {
-					track, err := m.client.GetTrack(m.ctx, fmt.Sprintf("%d", trackID))
+					track, err := m.client.GetTrack(m.ctx, strconv.Itoa(trackID))
 					if err != nil {
 						return errMsg(err)
 					}
@@ -1400,17 +1515,11 @@ func visibleWindow(cursor, total, height int) (start, end int) {
 	if total == 0 {
 		return 0, 0
 	}
-	start = cursor - height/2
-	if start < 0 {
-		start = 0
-	}
+	start = max(cursor-height/2, 0)
 	end = start + height
 	if end > total {
 		end = total
-		start = end - height
-		if start < 0 {
-			start = 0
-		}
+		start = max(end-height, 0)
 	}
 	return start, end
 }
@@ -1476,7 +1585,7 @@ func updateBars(frame int, heights, targets *[numBars]int, isPlaying bool) {
 	// Re-randomise targets on a staggered schedule so bars don't all move together.
 	for b := range targets {
 		if (frame+b*3)%retargetIn == 0 {
-			targets[b] = barMin + rand.IntN(barMax-barMin+1)
+			targets[b] = barMin + rand.IntN(barMax-barMin+1) //nolint:gosec // G404: equaliser bar animation does not need crypto-grade randomness
 		}
 	}
 
@@ -1498,10 +1607,10 @@ func musicBars(frame int, heights [numBars]int, palette []lipgloss.Color, isPlay
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 
 	var rows [numRows]string
-	for row := 0; row < numRows; row++ {
+	for row := range numRows {
 		var sb strings.Builder
 		sb.WriteString("  ") // gap between logo and bars
-		for b := 0; b < numBars; b++ {
+		for b := range numBars {
 			h := (heights[b] + barScale - 1) / barScale // ceil-divide back to rows
 			if !isPlaying {
 				sb.WriteString(dimStyle.Render("▁"))
@@ -1612,13 +1721,15 @@ func (m Model) View() string {
 
 	// Tabs
 	tabs := []string{"My Music", "Daily Mixes", "Search"}
+	var sSb1726 strings.Builder
 	for i, t := range tabs {
 		if int(m.state) == i {
-			s += activeTab.Render(t) + " "
+			sSb1726.WriteString(activeTab.Render(t) + " ")
 		} else {
-			s += inactiveTab.Render(t) + " "
+			sSb1726.WriteString(inactiveTab.Render(t) + " ")
 		}
 	}
+	s += sSb1726.String()
 	s += "\n\n"
 
 	// List Content
@@ -1631,10 +1742,10 @@ func (m Model) View() string {
 	if m.state == StateSearch {
 		overhead += 2
 	}
-	listHeight := m.height - overhead
-	if listHeight < 1 {
-		listHeight = 1
+	if m.state == StateArtistAlbums {
+		overhead++ // extra "Artist: <name>" footer line
 	}
+	listHeight := max(m.height-overhead, 1)
 
 	// Panel: 36 columns for cover art, centered in the right half of the
 	// terminal. The list takes the left half; the remaining space is split as
@@ -1646,10 +1757,7 @@ func (m Model) View() string {
 		// Right zone = everything to the right of the list.
 		rightZone := m.width / 2
 		listW = m.width - rightZone
-		gutterL = (rightZone - panelW) / 2
-		if gutterL < 1 {
-			gutterL = 1
-		}
+		gutterL = max((rightZone-panelW)/2, 1)
 	}
 
 	var listLines []string
@@ -1724,7 +1832,42 @@ func (m Model) View() string {
 				}
 			}
 		}
-		footer = "\n [TAB] Switch Tab | [ENTER] Search / Play | [↑/↓] Navigate | [SPACE] Pause | [f] Favorite | [c] Copy Link | [9/0] Vol | [d] Device | [q] Quit\n"
+		footer = "\n [TAB] Switch Tab | [ENTER] Search / Play | [↑/↓] Navigate | [SPACE] Pause | [a] Artist | [f] Favorite | [c] Copy Link | [9/0] Vol | [d] Device | [q] Quit\n"
+
+	case StateArtistAlbums:
+		if m.artistLoading {
+			listLines = append(listLines, "  Loading artist...")
+		} else {
+			total := len(m.artistAlbums) + 2
+			start, end := visibleWindow(m.artistCursor, total, listHeight)
+			for i := start; i < end; i++ {
+				cur := " "
+				if m.artistCursor == i {
+					cur = ">"
+				}
+				var label string
+				switch i {
+				case 0:
+					label = "▶ Play all tracks"
+				case 1:
+					label = "★ Top tracks"
+				default:
+					a := m.artistAlbums[i-2]
+					year := ""
+					if len(a.ReleaseDate) >= 4 {
+						year = " (" + a.ReleaseDate[:4] + ")"
+					}
+					label = fmt.Sprintf("%s%s — %d tracks", a.Title, year, a.NumberOfTracks)
+				}
+				line := fmt.Sprintf(" %s %s", cur, label)
+				if m.artistCursor == i {
+					listLines = append(listLines, cursorStyle.Render(truncateStr(line, listW)))
+				} else {
+					listLines = append(listLines, truncateStr(line, listW))
+				}
+			}
+		}
+		footer = fmt.Sprintf("\n Artist: %s\n [↑/↓] Navigate | [ENTER] Open | [a] Artist | [ESC] Back | [9/0] Vol | [q] Quit\n", m.artistName)
 
 	default:
 		items := m.tracks
@@ -1749,7 +1892,7 @@ func (m Model) View() string {
 		if m.clientMode && m.localPlaylist {
 			footer = "\n [TAB] Switch Tab | [ENTER] Send playlist + Play | [r] Radio | [f] Favorite | [9/0] Vol | [q] Quit\n"
 		} else {
-			footer = "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [>/<] Next/Prev | [s] Shuffle | [r] Radio | [f] Favorite | [c] Copy Link | [9/0] Vol | [d] Device | [q] Quit\n"
+			footer = "\n [TAB] Switch Tab | [ENTER] Play | [SPACE] Pause | [←/→] Seek 10s | [>/<] Next/Prev | [s] Shuffle | [r] Radio | [a] Artist | [f] Favorite | [c] Copy Link | [9/0] Vol | [d] Device | [q] Quit\n"
 		}
 	}
 
@@ -1761,7 +1904,8 @@ func (m Model) View() string {
 		panel := coverPanelLines(m.coverImage, title, artist, album, panelW, listHeight, m.kittyRows)
 		gutter := strings.Repeat(" ", gutterL)
 
-		for i := 0; i < listHeight; i++ {
+		var sSb1913 strings.Builder
+		for i := range listHeight {
 			l := ""
 			if i < len(listLines) {
 				l = listLines[i]
@@ -1772,16 +1916,16 @@ func (m Model) View() string {
 			}
 			// Pad list column to listW so the panel always starts at a fixed column.
 			lRunes := []rune(stripANSI(l))
-			pad := listW - len(lRunes)
-			if pad < 0 {
-				pad = 0
-			}
-			s += l + strings.Repeat(" ", pad) + gutter + r + "\n"
+			pad := max(listW-len(lRunes), 0)
+			sSb1913.WriteString(l + strings.Repeat(" ", pad) + gutter + r + "\n")
 		}
+		s += sSb1913.String()
 	} else {
+		var sSb1931 strings.Builder
 		for _, line := range listLines {
-			s += line + "\n"
+			sSb1931.WriteString(line + "\n")
 		}
+		s += sSb1931.String()
 	}
 
 	s += footer

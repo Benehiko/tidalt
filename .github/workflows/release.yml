@@ -28,11 +28,18 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install ALSA dev headers
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev build-essential nasm pkg-config curl xz-utils
+
+      # Build a minimal, static FFmpeg (native arch) so the released raw binary
+      # carries no FFmpeg runtime dependency and is portable across distros —
+      # matching the .deb/.rpm/docker artifacts. Installs to /opt/ffmpeg, which
+      # internal/player/avcodec_static.go links against under -tags staticav.
+      - name: Build static FFmpeg
+        run: sudo bash packaging/build-static-ffmpeg.sh /opt/ffmpeg
 
       - name: Build
-        run: go build -ldflags="-s -w" -o tidalt-linux-${{ matrix.goarch }} ./cmd/tidalt
+        run: go build -tags staticav -ldflags="-s -w" -o tidalt-linux-${{ matrix.goarch }} ./cmd/tidalt
 
       - uses: actions/upload-artifact@v4
         with:

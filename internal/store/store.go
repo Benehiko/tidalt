@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -150,7 +151,7 @@ func NewSecretsStore(passphrase PassphraseFunc) *SecretsStore {
 
 func (s *SecretsStore) SaveSession(data any) error {
 	if s.store == nil {
-		return fmt.Errorf("no secure store initialized")
+		return errors.New("no secure store initialized")
 	}
 	bytes, err := json.Marshal(data)
 	if err != nil {
@@ -161,7 +162,7 @@ func (s *SecretsStore) SaveSession(data any) error {
 
 func (s *SecretsStore) LoadSession(target any) error {
 	if s.store == nil {
-		return fmt.Errorf("no secure store initialized")
+		return errors.New("no secure store initialized")
 	}
 	secret, err := s.store.Get(context.Background(), secrets.MustParseID(AccountName))
 	if err != nil {
@@ -176,7 +177,7 @@ func (s *SecretsStore) LoadSession(target any) error {
 
 func (s *SecretsStore) DeleteSession() error {
 	if s.store == nil {
-		return fmt.Errorf("no secure store initialized")
+		return errors.New("no secure store initialized")
 	}
 	return s.store.Delete(context.Background(), secrets.MustParseID(AccountName))
 }
