@@ -401,6 +401,44 @@ func (s *SecretsStore) LoadPlaylist(target any) error {
 	})
 }
 
+// SaveHistory persists the recently-played track list so it survives across
+// sessions.
+func (s *SecretsStore) SaveHistory(tracks any) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		data, err := json.Marshal(tracks)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte("history"), data)
+	})
+}
+
+// LoadHistory restores the recently-played list saved by a previous session.
+// Returns without error when no history is stored yet.
+func (s *SecretsStore) LoadHistory(target any) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte("Settings"))
+		if b == nil {
+			return nil
+		}
+		v := b.Get([]byte("history"))
+		if v == nil {
+			return nil
+		}
+		return json.Unmarshal(v, target)
+	})
+}
+
 // CacheSearchResults stores the tracks returned for a search query so they can
 // be served from cache on repeated lookups.
 func (s *SecretsStore) CacheSearchResults(query string, tracks any) error {
