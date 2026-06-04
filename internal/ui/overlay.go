@@ -10,14 +10,7 @@ import (
 	"github.com/Benehiko/tidalt/v3/internal/tidal"
 )
 
-// openCommandPalette raises the command-palette overlay. The palette UI and
-// fuzzy matching are wired in a later step; here it just opens the layer.
-func (m *Model) openCommandPalette() {
-	m.overlay = OverlayCommandPalette
-}
-
-// openActionSheet raises the contextual action sheet for a track. The sheet UI
-// is wired in a later step.
+// openActionSheet raises the contextual action sheet for a track.
 func (m *Model) openActionSheet(t tidal.Track) {
 	m.sheetTrack = &t
 	m.sheetCursor = 0
@@ -31,9 +24,9 @@ func (m Model) updateOverlay(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateDeviceSelect(k)
 	case OverlayActionSheet:
 		return m.updateActionSheet(k)
+	case OverlayCommandPalette:
+		return m.updateCommandPalette(k)
 	default:
-		// The command-palette handler lands in a later step; until then any
-		// key (notably Esc) just dismisses the overlay.
 		if k.String() == keyEsc {
 			m.overlay = OverlayNone
 		}

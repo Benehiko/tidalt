@@ -59,6 +59,9 @@ func TestViewRendersAllSectionsAndSizes(t *testing.T) {
 					tr := m.tracks[0]
 					m.sheetTrack = &tr
 				}
+				if ov == OverlayCommandPalette {
+					m.openCommandPalette()
+				}
 				// Should not panic.
 				out := m.View()
 				_ = out
@@ -100,6 +103,36 @@ func TestActionSheetRenders(t *testing.T) {
 				t.Errorf("cursor %d: action sheet missing %q", cur, want)
 			}
 		}
+	}
+}
+
+// TestCommandPaletteFilterAndJump verifies fuzzy filtering and a "jump to"
+// command switching sections.
+func TestCommandPaletteFilterAndJump(t *testing.T) {
+	m := newSmokeModel()
+	m.width, m.height = 96, 26
+	m.openCommandPalette()
+	m.paletteInput.SetValue("mixes")
+	items := filterPaletteItems(m.paletteInput.Value())
+	if len(items) == 0 {
+		t.Fatalf("expected at least one match for %q", "mixes")
+	}
+	out := stripANSI(m.renderCommandPalette(m.theme))
+	if !strings.Contains(out, "Daily Mixes") {
+		t.Errorf("palette should show the Daily Mixes jump entry, got:\n%s", out)
+	}
+
+	// Selecting the first match should switch sections and close the overlay.
+	res, _ := items[0].run(m)
+	nm, ok := res.(Model)
+	if !ok {
+		t.Fatalf("palette run should return a Model, got %T", res)
+	}
+	if nm.overlay != OverlayNone {
+		t.Errorf("running a palette item should close the overlay")
+	}
+	if nm.section != SecMixes {
+		t.Errorf("jump-to-mixes should select SecMixes, got %v", nm.section)
 	}
 }
 

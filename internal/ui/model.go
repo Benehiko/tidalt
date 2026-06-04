@@ -75,6 +75,10 @@ type Model struct {
 	sheetTrack  *tidal.Track
 	sheetCursor int
 
+	// Command palette overlay state.
+	paletteInput  textinput.Model
+	paletteCursor int
+
 	errText string // transient error shown in status bar; cleared after display
 
 	// Data
@@ -1198,6 +1202,8 @@ func (m *Model) renderOverlay(t Theme, base string) string {
 	switch m.overlay {
 	case OverlayDeviceSelect:
 		popup = m.renderDeviceSelect(t)
+	case OverlayCommandPalette:
+		popup = m.renderCommandPalette(t)
 	case OverlayActionSheet:
 		popup = m.renderActionSheet(t)
 		anchorCentered = false
