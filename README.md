@@ -96,20 +96,25 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 
 ## Features
 
-- Browse favorites and Daily Mixes
-- Artist view — from any track, browse the artist's full discography and play everything, their top tracks, or a single album
-- Search tracks by name or paste a Tidal track URL
-- Song radio — load a playlist of similar tracks for any song
+- **Sidebar navigation** — a persistent left nav groups every section: Now Playing, Queue, Playlists, Favorite Songs / Artists / Albums, Recently Played, Daily Mixes, Search, and Themes
+- **Contextual action sheet** (`o`) — from any track, open a popup of actions: play now, play next, add to queue, add to playlist, start radio, go to artist/album, favorite, copy link
+- **Command palette** (`:` or `Ctrl+P`) — fuzzy-run any action or jump to any section
+- **Hybrid queue / playlist model** — the queue is your live workspace; opening a saved playlist loads it and tracks its origin. The header shows `synced`, `edited — S save`, or `radio · unsaved — S save`, and `S` saves the queue as a new playlist. Edits never silently change a saved playlist
+- **First-class favorites** — browse favorite songs, artists, and albums as their own sections
+- **Grouped search** — results are split into Songs / Artists / Albums; drill into an artist or album from any hit
+- **In-app theme picker** — eight built-in color schemes (TIDALT, Catppuccin, Tokyo Night, Gruvbox, Nord, Rosé Pine, Dracula, Amber CRT) plus an "Auto — match terminal" option, with live preview as you move the cursor; the choice is persisted
+- Artist view — browse an artist's full discography and play everything, their top tracks, or a single album
+- Song radio — build a queue of similar tracks for any song
 - Shuffle (Fisher-Yates pre-shuffle or random pick)
-- Favorite / unfavorite tracks
 - Bit-perfect FLAC playback via direct ALSA `hw:` — bypasses PipeWire/PulseAudio entirely
 - Auto-negotiates the best PCM format your DAC supports
 - Auto-advances through the queue; respects shuffle mode
-- Seek forward/back 10 seconds with `←`/`→`
 - Volume control and output device selection, both persisted between sessions
 - Session and playback position restored on next launch
 - MPRIS2 registration — media keys and `playerctl` work without TUI focus
 - Daemon mode — run headless in the background, control via TUI client or playerctl
+
+See [docs/ui.md](docs/ui.md) for a full tour of the interface.
 
 ---
 
@@ -117,25 +122,31 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 
 ### In-TUI
 
-| Key            | Action                                       |
-| -------------- | -------------------------------------------- |
-| `Tab`          | Cycle tabs (My Music → Daily Mixes → Search) |
-| `↑` / `k`      | Move cursor up                               |
-| `↓` / `j`      | Move cursor down                             |
-| `Enter`        | Play selected track / load mix / confirm     |
-| `Space`        | Pause / resume                               |
-| `←`            | Seek back 10 seconds                         |
-| `→`            | Seek forward 10 seconds                      |
-| `s`            | Cycle shuffle mode (Off → Shuffle → Random)  |
-| `r`            | Load radio playlist for selected track       |
-| `a`            | Open artist view for the selected track      |
-| `f`            | Toggle favorite on selected track            |
-| `9`            | Volume down 5%                               |
-| `0`            | Volume up 5%                                 |
-| `c`            | Copy current track link to clipboard         |
-| `d`            | Open output device selector                  |
-| `Esc`          | Close device selector / artist view          |
-| `q` / `Ctrl+C` | Quit                                         |
+The interface has two focus zones: the **sidebar** (section navigation) and the
+**main pane** (the selected section's content). `h` / `l` move focus between them.
+
+| Key                | Action                                                        |
+| ------------------ | ------------------------------------------------------------- |
+| `j` / `k` (`↓`/`↑`)| Move the cursor                                               |
+| `h` / `l`          | Move focus between the sidebar and the main pane              |
+| `Enter`            | Open the section / play the selected track / confirm          |
+| `o`                | Open the contextual action sheet for the selected track       |
+| `:` / `Ctrl+P`     | Open the command palette                                      |
+| `/`                | Jump to Search                                                |
+| `Space`            | Pause / resume                                                |
+| `←` / `→`          | Seek back / forward 10 seconds                                |
+| `>` / `<`          | Next / previous track                                         |
+| `s`                | Cycle shuffle mode (Off → Shuffle → Random)                   |
+| `r`                | Start a radio queue from the selected track                   |
+| `a`                | Open the artist view for the selected track                   |
+| `f`                | Toggle favorite on the selected track                         |
+| `S`                | Save the current queue as a new playlist                      |
+| `t`                | Cycle the color theme                                         |
+| `9` / `0`          | Volume down / up 5%                                           |
+| `c`                | Copy the current track link to the clipboard                  |
+| `d`                | Open the output device selector                               |
+| `Esc`              | Close an overlay / back out of the artist view / refocus the sidebar |
+| `q` / `Ctrl+C`     | Quit                                                          |
 
 ### Global shortcuts (MPRIS2)
 

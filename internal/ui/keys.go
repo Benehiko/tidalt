@@ -188,6 +188,9 @@ func (m Model) selectSection(sec Section) (tea.Model, tea.Cmd) {
 	if sec == SecPlaylists {
 		m.detailFocus = false
 	}
+	if sec == SecSettings {
+		m.enterSettings()
+	}
 
 	switch sec {
 	case SecSearch:
@@ -275,6 +278,8 @@ func (m Model) updateSection(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateFavAlbums(k)
 	case SecHistory:
 		return m.updateHistory(k)
+	case SecSettings:
+		return m.updateSettings(k)
 	default:
 		// Queue, Favorites songs, Now Playing, Mixes.
 		if k.String() == "h" || (k.String() == keyLeft && m.currentTrack == nil) {
