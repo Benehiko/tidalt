@@ -52,8 +52,8 @@ flowchart TD
 | `cmd/tidalt` | Entry point. Subcommands: TUI, `daemon`, `play`, `setup`, `setup --daemon`. Session load/restore, OAuth2 device-flow login. |
 | `internal/tidal` | Tidal API client. OAuth2 auth, token refresh, REST calls (favorites, search, stream URL, mixes, radio, artist albums/top-tracks/all-tracks). |
 | `internal/player` | Bit-perfect playback via CGO. FFmpeg (libav*) demuxes/decodes the stream; libasound plays it. Direct ALSA `hw:` access, PCM format negotiation, PipeWire reservation, seek. |
-| `internal/store` | Persistent storage. OAuth2 session in system keychain (falls back to age-encrypted file). Volume, device, position, and track cache in bbolt. |
-| `internal/ui` | BubbleTea TUI. Browse/search/mixes/device-select/artist-albums states, progress bar, logo animation. Runs headless in daemon mode. |
+| `internal/store` | Persistent storage. OAuth2 session in system keychain (falls back to age-encrypted file). Volume, device, position, theme, and track cache in bbolt. |
+| `internal/ui` | BubbleTea TUI. A sidebar + main-pane layout: sections for Now Playing, Queue, Playlists, Favorites (songs/artists/albums), Recently Played, Daily Mixes, Search, and Themes; overlays for the command palette, contextual action sheet, device select, and add-to-playlist; a centralized palette/theme system with a live-preview picker; a hybrid queue/playlist model. Runs headless in daemon mode. See [ui.md](ui.md). |
 | `internal/mpris` | MPRIS2 D-Bus server + client. Media-key commands, `io.tidalt.App` private interface for client↔server communication. |
 
 ## Dependencies

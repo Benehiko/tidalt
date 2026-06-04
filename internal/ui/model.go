@@ -79,6 +79,10 @@ type Model struct {
 	paletteInput  textinput.Model
 	paletteCursor int
 
+	// Theme picker (Settings section) cursor; previewPalette (below) holds the
+	// live-previewed scheme while the cursor moves.
+	themeCursor int
+
 	errText string // transient error shown in status bar; cleared after display
 
 	// Data
@@ -1324,8 +1328,9 @@ func (m *Model) renderMain(t Theme, w, h int) string {
 		return m.renderFavAlbumsPane(t, w, h)
 	case SecHistory:
 		return m.renderHistoryPane(t, w, h)
+	case SecSettings:
+		return m.renderThemePicker(t, w, h)
 	default:
-		// Settings (theme picker) lands in the final step.
 		return renderPanel(t, sectionTitle(m.section), m.focusMain, w, h,
 			t.RowDim.Render("Coming soon."))
 	}

@@ -116,6 +116,19 @@ var paletteOrder = []string{
 	"gruvbox", "nord", "rosepine", "dracula", "amber",
 }
 
+// paletteNames maps a scheme key to its human-readable label (theme picker).
+var paletteNames = map[string]string{
+	"auto":       "Auto — match terminal",
+	"tidalt":     "TIDALT",
+	"catppuccin": "Catppuccin Mocha",
+	"tokyonight": "Tokyo Night",
+	"gruvbox":    "Gruvbox Dark",
+	"nord":       "Nord",
+	"rosepine":   "Rosé Pine",
+	"dracula":    "Dracula",
+	"amber":      "Amber CRT",
+}
+
 const defaultThemeName = "tidalt"
 
 // resolvePalette returns the Palette for a scheme name, falling back to the

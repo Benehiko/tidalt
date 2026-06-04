@@ -5,10 +5,21 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Benehiko/tidalt/v3/internal/store"
 	"github.com/Benehiko/tidalt/v3/internal/tidal"
 )
+
+// asModel is a test helper for the (tea.Model -> Model) assertion.
+func asModel(t *testing.T, m tea.Model) Model {
+	t.Helper()
+	mm, ok := m.(Model)
+	if !ok {
+		t.Fatalf("expected ui.Model, got %T", m)
+	}
+	return mm
+}
 
 const srcRadio = "radio"
 
@@ -247,6 +258,50 @@ func TestGroupedSearch(t *testing.T) {
 	}
 	if !nm.showArtist {
 		t.Errorf("activating an artist row should open the artist drill-down")
+	}
+}
+
+// TestThemePickerPreviewCommitRevert verifies the picker live-previews on
+// move, commits on Enter, and reverts on Esc.
+func TestThemePickerPreviewCommitRevert(t *testing.T) {
+	m := newSmokeModel()
+	m.width, m.height = 96, 24
+	m.section = SecSettings
+	m.enterSettings()
+	if paletteOrder[m.themeCursor] != "tidalt" {
+		t.Fatalf("enterSettings should land on the active theme, got %q", paletteOrder[m.themeCursor])
+	}
+
+	// Move down → live preview set, but committed theme unchanged.
+	res, _ := m.updateSettings(tea.KeyMsg{Type: tea.KeyDown})
+	m = asModel(t, res)
+	if m.previewPalette == nil {
+		t.Errorf("moving the cursor should set a live preview")
+	}
+	if m.themeName != "tidalt" {
+		t.Errorf("preview must not commit the theme yet")
+	}
+
+	// Esc → revert.
+	res, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyEsc})
+	m = asModel(t, res)
+	if m.previewPalette != nil {
+		t.Errorf("Esc should cancel the preview")
+	}
+
+	// Move + Enter → commit.
+	m.section = SecSettings
+	m.focusMain = true
+	res, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyDown})
+	m = asModel(t, res)
+	committed := paletteOrder[m.themeCursor]
+	res, _ = m.updateSettings(tea.KeyMsg{Type: tea.KeyEnter})
+	m = asModel(t, res)
+	if m.themeName != committed {
+		t.Errorf("Enter should commit %q, got %q", committed, m.themeName)
+	}
+	if m.previewPalette != nil {
+		t.Errorf("commit should clear the preview")
 	}
 }
 
