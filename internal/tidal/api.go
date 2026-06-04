@@ -95,6 +95,16 @@ type Mix struct {
 	Description string `json:"description"`
 }
 
+// Playlist is a user-created or saved Tidal playlist. UUID is the v1 playlist
+// identifier used for track and mutation endpoints.
+type Playlist struct {
+	UUID           string `json:"uuid"`
+	Title          string `json:"title"`
+	Description    string `json:"description"`
+	NumberOfTracks int    `json:"numberOfTracks"`
+	Duration       int    `json:"duration"`
+}
+
 type SearchResponse struct {
 	Tracks struct {
 		Items []Track `json:"items"`
