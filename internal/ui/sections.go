@@ -115,7 +115,11 @@ func (m *Model) renderNowPlayingPane(t Theme, w, h int) string {
 	}
 	tr := m.currentTrack
 	panelW, imgRows := m.coverPaneDims()
-	cover := coverPanelLines(m.coverImage, tr.Title, tr.Artist.Name, tr.Album.Title, panelW, imgRows+4, m.kittyRows)
+	// Always use the Unicode block-art renderer here: Kitty graphics escapes
+	// are cursor-positioned and do not compose inside a bordered pane that is
+	// JoinHorizontal-ed with the sidebar (they bleed across the layout). Block
+	// art is a normal cell-grid string that lays out correctly.
+	cover := coverPanelLines(m.coverImage, tr.Title, tr.Artist.Name, tr.Album.Title, panelW, imgRows+4, nil)
 
 	var b strings.Builder
 	for _, ln := range cover {

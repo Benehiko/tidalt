@@ -1,11 +1,14 @@
 package ui
 
 import (
+	"image"
+	"image/color"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Benehiko/tidalt/v3/internal/store"
 	"github.com/Benehiko/tidalt/v3/internal/tidal"
@@ -334,6 +337,47 @@ func TestRowDurationSurvivesNarrow(t *testing.T) {
 	row := stripANSI(renderTrackRow(paletteTidalt.Theme(), tr, rowOpts{showIndex: true, index: 1, showArtist: true, width: 40, duration: 245}))
 	if !strings.Contains(row, "4:05") {
 		t.Errorf("duration should survive narrow width, got %q", row)
+	}
+}
+
+// TestNowPlayingCoverComposes renders the Now Playing pane with a cover image
+// and asserts the layout stays a clean rectangle (no Kitty-style bleed): every
+// visible line must be the same display width.
+func TestNowPlayingCoverComposes(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 120, 120))
+	for y := range 120 {
+		for x := range 120 {
+			if (x+y)/8%2 == 0 {
+				img.Set(x, y, color.RGBA{230, 180, 90, 255})
+			} else {
+				img.Set(x, y, color.RGBA{40, 60, 110, 255})
+			}
+		}
+	}
+	m := newSmokeModel()
+	m.width, m.height = 90, 28
+	m.section = SecNowPlaying
+	m.currentTrack = &tidal.Track{Title: "SPIRITED AWAY", Artist: tidal.Artist{Name: "Cosmic Flow"}}
+	m.coverImage = img
+	m.isPlaying = true
+	m.currPos, m.duration = 130, 441
+
+	out := m.View()
+	if strings.ContainsRune(out, '�') {
+		t.Errorf("cover render produced a replacement glyph")
+	}
+	// All non-empty lines must share one width (rectangular composition).
+	width := -1
+	for ln := range strings.SplitSeq(out, "\n") {
+		w := lipgloss.Width(ln)
+		if w == 0 {
+			continue
+		}
+		if width == -1 {
+			width = w
+		} else if w != width {
+			t.Fatalf("ragged layout: line width %d != %d (cover art bled outside the pane)", w, width)
+		}
 	}
 }
 
