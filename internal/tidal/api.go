@@ -216,33 +216,15 @@ func (c *Client) GetTrack(ctx context.Context, trackID string) (*Track, error) {
 	return &t, nil
 }
 
+// Search returns only the track results for a query. It is retained for
+// callers that just need tracks (e.g. the tidal:// URL resolver); the grouped
+// multi-category results are available via SearchAll.
 func (c *Client) Search(ctx context.Context, query string) ([]Track, error) {
-	params := url.Values{}
-	params.Set("query", query)
-	params.Set("limit", "20")
-	params.Set("countryCode", c.Session.CountryCode)
-	params.Set("types", "TRACKS")
-
-	u := BaseURL + "/search?" + params.Encode()
-	resp, err := c.authGet(ctx, u)
+	res, err := c.SearchAll(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, apiErr("search", resp.StatusCode, body)
-	}
-
-	var res SearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return nil, err
-	}
-	for i := range res.Tracks.Items {
-		res.Tracks.Items[i].normalizeArtist()
-	}
-	return res.Tracks.Items, nil
+	return res.Tracks, nil
 }
 
 // normalizeArtist fills the singular Artist field from Artists[0] when the
