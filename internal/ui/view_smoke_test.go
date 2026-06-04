@@ -136,6 +136,38 @@ func TestCommandPaletteFilterAndJump(t *testing.T) {
 	}
 }
 
+// TestLibrarySectionsRender populates the favorites/playlists/history sections
+// and renders each, asserting their content appears.
+func TestLibrarySectionsRender(t *testing.T) {
+	m := newSmokeModel()
+	m.width, m.height = 104, 28
+	m.playlists = []tidal.Playlist{{UUID: "p1", Title: "Late Night Drive", NumberOfTracks: 23}}
+	m.openPlaylist = &m.playlists[0]
+	m.playlistName = "Late Night Drive"
+	m.detailTracks = m.tracks
+	m.favArtists = []tidal.Artist{{ID: 9, Name: "Pierce The Veil"}}
+	m.favAlbums = []tidal.Album{{ID: 5, Title: "Collide With The Sky", ReleaseDate: "2012-01-01", NumberOfTracks: 13}}
+	m.history = m.tracks
+
+	cases := []struct {
+		sec  Section
+		want string
+	}{
+		{SecPlaylists, "Late Night Drive"},
+		{SecFavArtists, "Pierce The Veil"},
+		{SecFavAlbums, "Collide With The Sky"},
+		{SecHistory, "May These Noises"},
+	}
+	for _, c := range cases {
+		m.section = c.sec
+		m.sidebarCursor = navIndexOf(c.sec)
+		out := stripANSI(m.View())
+		if !strings.Contains(out, c.want) {
+			t.Errorf("section %v should contain %q", c.sec, c.want)
+		}
+	}
+}
+
 // TestClientTintRenders confirms client mode renders without panic and the
 // theme tint applies.
 func TestClientTintRenders(t *testing.T) {

@@ -15,8 +15,19 @@ type (
 	favoritesLoadedMsg []tidal.Track
 	mixesMsg           []tidal.Mix
 	searchResultsMsg   []tidal.Track
-	openURLTracksMsg   []tidal.Track // tracks resolved from a startup tidal:// URL
-	cachedPlaylistMsg  []tidal.Track // playlist restored from bbolt on startup
+	// Library section data.
+	playlistsMsg  []tidal.Playlist
+	favArtistsMsg []tidal.Artist
+	favAlbumsMsg  []tidal.Album
+	// playlistDetailMsg carries the tracks of an opened playlist for the
+	// Playlists detail pane.
+	playlistDetailMsg struct {
+		uuid   string
+		title  string
+		tracks []tidal.Track
+	}
+	openURLTracksMsg  []tidal.Track // tracks resolved from a startup tidal:// URL
+	cachedPlaylistMsg []tidal.Track // playlist restored from bbolt on startup
 	// artistAlbumsMsg carries an artist's discography after the user opens the
 	// artist view with "a".
 	artistAlbumsMsg struct {

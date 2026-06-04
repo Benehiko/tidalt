@@ -19,6 +19,8 @@ const (
 	keyUp    = "up"
 	keyDown  = "down"
 	keyEnter = "enter"
+	keyLeft  = "left"
+	keyRight = "right"
 )
 
 // handleKey is the top-level key dispatcher. Order of precedence:
@@ -168,7 +170,7 @@ func (m Model) updateSidebar(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.sidebarCursor < len(navSections)-1 {
 			m.sidebarCursor++
 		}
-	case keyEnter, "l", "right", " ":
+	case keyEnter, "l", keyRight, " ":
 		return m.selectSection(navSections[m.sidebarCursor])
 	case "/":
 		return m.selectSection(SecSearch)
@@ -184,6 +186,9 @@ func (m Model) selectSection(sec Section) (tea.Model, tea.Cmd) {
 	m.focusMain = true
 	m.sidebarCursor = navIndexOf(sec)
 	m.cursor = 0
+	if sec == SecPlaylists {
+		m.detailFocus = false
+	}
 
 	switch sec {
 	case SecSearch:
@@ -211,39 +216,74 @@ func (m *Model) loadSection(sec Section) tea.Cmd {
 			}
 			return mixesMsg(mixes)
 		}
+	case SecPlaylists:
+		return func() tea.Msg {
+			pls, err := m.client.GetUserPlaylists(m.ctx)
+			if err != nil {
+				return errMsg(err)
+			}
+			return playlistsMsg(pls)
+		}
+	case SecFavArtists:
+		return func() tea.Msg {
+			artists, err := m.client.GetFavoriteArtists(m.ctx, 200)
+			if err != nil {
+				return errMsg(err)
+			}
+			return favArtistsMsg(artists)
+		}
+	case SecFavAlbums:
+		return func() tea.Msg {
+			albums, err := m.client.GetFavoriteAlbums(m.ctx, 200)
+			if err != nil {
+				return errMsg(err)
+			}
+			return favAlbumsMsg(albums)
+		}
 	default:
+		// SecHistory uses the in-memory m.history; others reuse loaded data.
 		return nil
 	}
 }
 
-// updateSection routes keys to the active section's handler. Shared track-level
-// actions are funneled through actOnTrack.
+// updateSection routes keys to the active section's handler.
 func (m Model) updateSection(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Focus toggle back to the sidebar.
-	switch k.String() {
-	case "h", "left":
-		if m.section != SecSearch || !m.searchInput.Focused() {
-			if k.String() == "h" || m.currentTrack == nil {
-				m.focusMain = false
-				return m, nil
-			}
-		}
-	case keyEsc:
-		if m.showArtist {
+	// Esc backs out of the artist drill-down, else returns focus to the sidebar.
+	if k.String() == keyEsc {
+		switch {
+		case m.showArtist:
 			m.showArtist = false
-			return m, nil
+		case m.section == SecPlaylists && m.detailFocus:
+			m.detailFocus = false
+		default:
+			m.focusMain = false
 		}
-		m.focusMain = false
 		return m, nil
 	}
 
 	if m.showArtist {
 		return m.updateArtist(k)
 	}
-	if m.section == SecSearch {
+
+	switch m.section {
+	case SecSearch:
 		return m.updateSearchKeys(k)
+	case SecPlaylists:
+		return m.updatePlaylists(k)
+	case SecFavArtists:
+		return m.updateFavArtists(k)
+	case SecFavAlbums:
+		return m.updateFavAlbums(k)
+	case SecHistory:
+		return m.updateHistory(k)
+	default:
+		// Queue, Favorites songs, Now Playing, Mixes.
+		if k.String() == "h" || (k.String() == keyLeft && m.currentTrack == nil) {
+			m.focusMain = false
+			return m, nil
+		}
+		return m.updateListKeys(k)
 	}
-	return m.updateListKeys(k)
 }
 
 // updateListKeys handles the common track-list sections (Queue, Favorites songs,
@@ -288,13 +328,13 @@ func (m Model) commonKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case " ":
 		return m.togglePlay()
-	case "left":
+	case keyLeft:
 		if !m.clientMode && m.player != nil && m.currentTrack != nil {
 			if err := m.player.Seek(m.currPos - 10); err != nil {
 				m.errText = err.Error()
 			}
 		}
-	case "right":
+	case keyRight:
 		if !m.clientMode && m.player != nil && m.currentTrack != nil {
 			if err := m.player.Seek(m.currPos + 10); err != nil {
 				m.errText = err.Error()
