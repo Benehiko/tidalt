@@ -32,6 +32,9 @@ func (m *Model) renderQueuePane(t Theme, w, h int) string {
 		rows = append(rows, t.RowDim.Render("Queue is empty. Search or open a mix to add tracks."))
 	}
 	title := sectionTitle(m.section)
+	if m.section == SecQueue {
+		title = m.queueHeader(t)
+	}
 	return renderListPanel(t, title, m.focusMain, rows, m.cursor, w, h)
 }
 

@@ -26,12 +26,65 @@ func (m Model) updateOverlay(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateActionSheet(k)
 	case OverlayCommandPalette:
 		return m.updateCommandPalette(k)
+	case OverlayAddToPlaylist:
+		return m.updateAddToPlaylist(k)
 	default:
 		if k.String() == keyEsc {
 			m.overlay = OverlayNone
 		}
 		return m, nil
 	}
+}
+
+// updateAddToPlaylist handles the "save queue to existing playlist" picker.
+func (m Model) updateAddToPlaylist(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case keyEsc:
+		m.overlay = OverlayNone
+		return m, nil
+	case keyUp, "k":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+		return m, nil
+	case keyDown, "j":
+		if m.cursor < len(m.playlists)-1 {
+			m.cursor++
+		}
+		return m, nil
+	case keyEnter:
+		if m.cursor >= 0 && m.cursor < len(m.playlists) {
+			pl := m.playlists[m.cursor]
+			m.overlay = OverlayNone
+			cmd := m.saveQueueToExistingCmd(pl.UUID, pl.Title)
+			return m, cmd
+		}
+		m.overlay = OverlayNone
+		return m, nil
+	}
+	return m, nil
+}
+
+// renderAddToPlaylist renders the existing-playlist picker popup.
+func (m *Model) renderAddToPlaylist(t Theme) string {
+	w := min(max(m.width/2, 34), 56)
+	innerW := w - 2
+	var rows []string
+	for i := range m.playlists {
+		pl := m.playlists[i]
+		label := fmt.Sprintf(" ≡  %s  %s", pl.Title, t.RowFaint.Render(fmt.Sprintf("%d tracks", pl.NumberOfTracks)))
+		if i == m.cursor {
+			rows = append(rows, t.CmdItemSel.Width(innerW).Render(stripANSI(fmt.Sprintf(" ≡  %s  %d tracks", pl.Title, pl.NumberOfTracks))))
+		} else {
+			rows = append(rows, truncateStr(label, innerW))
+		}
+	}
+	if len(rows) == 0 {
+		rows = append(rows, t.RowDim.Render(" No playlists — use “Save queue as playlist…”."))
+	}
+	h := min(len(rows)+2, m.height-4)
+	body := strings.Join(rows, "\n")
+	return renderPanel(t, "ADD QUEUE TO PLAYLIST", true, w, max(h, 4), body)
 }
 
 // sheetAction is one row in the contextual action sheet.

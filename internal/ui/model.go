@@ -116,6 +116,19 @@ type Model struct {
 	detailCursor int
 	detailFocus  bool
 
+	// Hybrid queue/playlist model. queueSource describes the queue's origin
+	// ("playlist:<name>", "radio", or ""); queuePlaylistUUID is the saved
+	// playlist it was loaded from (if any); queueDirty marks unsaved edits.
+	queueSource       string
+	queuePlaylistUUID string
+	queueDirty        bool
+	// pendingQueueSource is applied to queueSource when the next tracksMsg
+	// lands (e.g. set to "radio" before a GetTrackRadio request resolves).
+	pendingQueueSource string
+
+	// toast is a transient green confirmation flash, cleared after a delay.
+	toast string
+
 	// Terminal size
 	width  int
 	height int
@@ -968,6 +981,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tracksOrder = msg
 		m.shuffleMode = ShuffleOff
 		m.applyShuffle()
+		// Record the queue's origin: a pending source (e.g. "radio") if one was
+		// set before the request, otherwise this is an ad-hoc load with no
+		// saved-playlist backing.
+		m.queueSource = m.pendingQueueSource
+		m.pendingQueueSource = ""
+		m.queuePlaylistUUID = ""
+		m.queueDirty = false
 		// Don't yank focus away if the user is in the Search section.
 		if m.section != SecSearch {
 			m.section = SecQueue
@@ -1045,6 +1065,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clearErrMsg:
 		m.errText = ""
+
+	case queueSavedMsg:
+		m.queuePlaylistUUID = msg.uuid
+		m.queueSource = "playlist:" + msg.name
+		m.queueDirty = false
+		m.toast = fmt.Sprintf("✓ Saved %q — %d tracks", msg.name, msg.count)
+		return m, toastClearCmd()
+
+	case clearToastMsg:
+		m.toast = ""
 
 	case playPlaylistMsg:
 		m.tracksOrder = msg.tracks
@@ -1173,7 +1203,10 @@ func (m Model) View() string {
 	}
 
 	parts := []string{body}
-	if m.errText != "" {
+	switch {
+	case m.toast != "":
+		parts = append(parts, t.GreenT.Render(" "+truncateStr(m.toast, m.width-2)))
+	case m.errText != "":
 		parts = append(parts, t.Err.Render(" ! "+truncateStr(m.errText, m.width-3)))
 	}
 	parts = append(parts,
@@ -1232,6 +1265,8 @@ func (m *Model) renderOverlay(t Theme, base string) string {
 		popup = m.renderDeviceSelect(t)
 	case OverlayCommandPalette:
 		popup = m.renderCommandPalette(t)
+	case OverlayAddToPlaylist:
+		popup = m.renderAddToPlaylist(t)
 	case OverlayActionSheet:
 		popup = m.renderActionSheet(t)
 		anchorCentered = false
