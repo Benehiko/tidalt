@@ -1194,9 +1194,13 @@ func (m *Model) footerKeyBar(t Theme, w int) string {
 // Step 3 wires only the device-select overlay; later steps add the others.
 func (m *Model) renderOverlay(t Theme, base string) string {
 	var popup string
+	anchorCentered := true
 	switch m.overlay {
 	case OverlayDeviceSelect:
 		popup = m.renderDeviceSelect(t)
+	case OverlayActionSheet:
+		popup = m.renderActionSheet(t)
+		anchorCentered = false
 	default:
 		return base
 	}
@@ -1205,8 +1209,16 @@ func (m *Model) renderOverlay(t Theme, base string) string {
 	}
 	pw := lipgloss.Width(popup)
 	ph := strings.Count(popup, "\n") + 1
+
 	x := max((m.width-pw)/2, 0)
 	y := max((m.height-ph)/2, 0)
+	if !anchorCentered {
+		// Anchor the action sheet near the selected row: just right of the
+		// sidebar, vertically tracking the cursor but clamped on-screen.
+		sidebarW, _ := m.layoutDims()
+		x = min(sidebarW+4, max(m.width-pw-1, 0))
+		y = min(max(m.cursor+2, 1), max(m.height-ph-2, 1))
+	}
 	return PlaceOverlay(x, y, popup, dim(t, base))
 }
 

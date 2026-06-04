@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Benehiko/tidalt/v3/internal/tidal"
 )
@@ -28,14 +29,143 @@ func (m Model) updateOverlay(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.overlay {
 	case OverlayDeviceSelect:
 		return m.updateDeviceSelect(k)
+	case OverlayActionSheet:
+		return m.updateActionSheet(k)
 	default:
-		// Palette / action sheet handlers land in later steps; until then any
+		// The command-palette handler lands in a later step; until then any
 		// key (notably Esc) just dismisses the overlay.
-		if k.String() == "esc" {
+		if k.String() == keyEsc {
 			m.overlay = OverlayNone
 		}
 		return m, nil
 	}
+}
+
+// sheetAction is one row in the contextual action sheet.
+type sheetAction struct {
+	icon  string
+	label string
+	hint  string // trailing hotkey hint
+	group string // non-empty marks a group header above this action
+	id    actionID
+}
+
+type actionID int
+
+const (
+	actPlayNow actionID = iota
+	actPlayNext
+	actAddQueue
+	actAddPlaylist
+	actRadio
+	actGoArtist
+	actGoAlbum
+	actFavorite
+	actCopyLink
+)
+
+// actionSheetItems returns the action list for the sheet's current track,
+// adapting the favorite label to the track's current state.
+func (m *Model) actionSheetItems() []sheetAction {
+	favLabel := "Favorite"
+	if m.sheetTrack != nil && m.favorites[m.sheetTrack.ID] {
+		favLabel = "Unfavorite"
+	}
+	artist := ""
+	album := ""
+	if m.sheetTrack != nil {
+		artist = m.sheetTrack.Artist.Name
+		album = m.sheetTrack.Album.Title
+	}
+	return []sheetAction{
+		{icon: "▸", label: "Play now", id: actPlayNow},
+		{icon: "⏭", label: "Play next", hint: "n", id: actPlayNext},
+		{icon: "＋", label: "Add to queue", hint: "e", id: actAddQueue},
+		{icon: "≡", label: "Add to playlist…", hint: "▸", id: actAddPlaylist},
+		{icon: "∿", label: "Start radio from this", hint: "r", id: actRadio},
+		{icon: "♫", label: "Artist · " + artist, hint: "a", group: "GO TO", id: actGoArtist},
+		{icon: "⊞", label: "Album · " + album, hint: "A", id: actGoAlbum},
+		{icon: "♥", label: favLabel, hint: "f", group: "MORE", id: actFavorite},
+		{icon: "⎘", label: "Copy Tidal link", hint: "c", id: actCopyLink},
+	}
+}
+
+// updateActionSheet handles navigation and selection within the action sheet.
+func (m Model) updateActionSheet(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	items := m.actionSheetItems()
+	switch k.String() {
+	case keyEsc, "o":
+		m.overlay = OverlayNone
+		return m, nil
+	case keyUp, "k":
+		if m.sheetCursor > 0 {
+			m.sheetCursor--
+		}
+		return m, nil
+	case keyDown, "j":
+		if m.sheetCursor < len(items)-1 {
+			m.sheetCursor++
+		}
+		return m, nil
+	case keyEnter:
+		return m.runSheetAction(items[m.sheetCursor].id)
+	case "n":
+		return m.runSheetAction(actPlayNext)
+	case "e":
+		return m.runSheetAction(actAddQueue)
+	case "r":
+		return m.runSheetAction(actRadio)
+	case "a":
+		return m.runSheetAction(actGoArtist)
+	case "A":
+		return m.runSheetAction(actGoAlbum)
+	case "f":
+		return m.runSheetAction(actFavorite)
+	case "c":
+		return m.runSheetAction(actCopyLink)
+	}
+	return m, nil
+}
+
+// runSheetAction executes a chosen action on the sheet's track and closes the
+// sheet.
+func (m Model) runSheetAction(id actionID) (tea.Model, tea.Cmd) {
+	if m.sheetTrack == nil {
+		m.overlay = OverlayNone
+		return m, nil
+	}
+	track := *m.sheetTrack
+	m.overlay = OverlayNone
+
+	switch id {
+	case actPlayNow:
+		_ = m.store.CacheTrack(track.ID, track)
+		cmd := m.playTrackCmd(track)
+		return m, cmd
+	case actPlayNext:
+		m.enqueueNext(track)
+		return m, nil
+	case actAddQueue:
+		m.enqueueEnd(track)
+		return m, nil
+	case actAddPlaylist:
+		// Wired in the playlist step; no-op placeholder for now.
+		return m, nil
+	case actRadio:
+		cmd := m.radioFrom(track)
+		return m, cmd
+	case actGoArtist:
+		return m.openArtistFor(&track)
+	case actGoAlbum:
+		cmd := m.openAlbum(track.Album.ID)
+		return m, cmd
+	case actFavorite:
+		cmd := m.toggleFavorite(track)
+		return m, cmd
+	case actCopyLink:
+		return m.copyTrackLink(track)
+	}
+	return m, nil
 }
 
 // updateDeviceSelect handles the device-picker overlay.
@@ -103,4 +233,46 @@ func (m *Model) renderDeviceSelect(t Theme) string {
 	h := min(len(rows)+2, m.height-4)
 	body := strings.Join(rows, "\n")
 	return renderPanel(t, "SELECT DEVICE", true, w, max(h, 4), body)
+}
+
+// renderActionSheet renders the contextual action sheet popup. Its title is the
+// track name; selected row uses the cyan band; group headers separate sections.
+func (m *Model) renderActionSheet(t Theme) string {
+	items := m.actionSheetItems()
+	w := min(max(m.width/2, 34), 52)
+	innerW := w - 2
+
+	var rows []string
+	for i, it := range items {
+		if it.group != "" {
+			rows = append(rows, t.CmdGroup.Render(it.group))
+		}
+		// Plain text content (icon + label + right-aligned hint), measured
+		// without styling so it lays out the same selected or not.
+		plain := " " + it.icon + "  " + it.label
+		if it.hint != "" {
+			pad := max(innerW-lipgloss.Width(plain)-len([]rune(it.hint))-1, 1)
+			plain += strings.Repeat(" ", pad) + it.hint
+		}
+		if i == m.sheetCursor {
+			rows = append(rows, t.CmdItemSel.Width(innerW).Render(plain))
+			continue
+		}
+		icon := t.RowDim.Render(it.icon)
+		line := " " + icon + "  " + it.label
+		if it.hint != "" {
+			hint := t.CmdHint.Render(it.hint)
+			pad := max(innerW-lipgloss.Width(" "+it.icon+"  "+it.label)-lipgloss.Width(hint)-1, 1)
+			line += strings.Repeat(" ", pad) + hint
+		}
+		rows = append(rows, line)
+	}
+
+	title := "ACTIONS"
+	if m.sheetTrack != nil {
+		title = truncateStr(m.sheetTrack.Title, innerW-2)
+	}
+	h := len(rows) + 2
+	body := strings.Join(rows, "\n")
+	return renderPanel(t, title, true, w, h, body)
 }

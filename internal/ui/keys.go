@@ -446,16 +446,37 @@ func (m *Model) toggleFavorite(t tidal.Track) tea.Cmd {
 }
 
 func (m Model) copyLink() (tea.Model, tea.Cmd) {
-	if m.currentTrack == nil {
-		return m, nil
+	if t := m.selectedTrack(); t != nil {
+		return m.copyTrackLink(*t)
 	}
-	link := fmt.Sprintf("https://tidal.com/track/%d", m.currentTrack.ID)
+	return m, nil
+}
+
+// copyTrackLink copies a track's Tidal URL to the clipboard and flashes a
+// confirmation in the status line.
+func (m Model) copyTrackLink(t tidal.Track) (tea.Model, tea.Cmd) {
+	link := fmt.Sprintf("https://tidal.com/track/%d", t.ID)
 	if err := clipboard.WriteAll(link); err != nil {
 		m.errText = err.Error()
 		return m, nil
 	}
 	m.errText = "Copied link to clipboard"
 	return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+}
+
+// openAlbum loads an album's tracks into the queue.
+func (m *Model) openAlbum(albumID int) tea.Cmd {
+	if albumID == 0 {
+		return nil
+	}
+	id := strconv.Itoa(albumID)
+	return func() tea.Msg {
+		tracks, err := m.client.GetAlbumTracks(m.ctx, id)
+		if err != nil {
+			return errMsg(err)
+		}
+		return tracksMsg(tracks)
+	}
 }
 
 // openArtistFor opens the transient artist drill-down for a track's artist.
