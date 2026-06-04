@@ -35,8 +35,15 @@ type (
 		artistName string
 		albums     []tidal.Album
 	}
-	errMsg        error
-	clearErrMsg   struct{}
+	errMsg      error
+	clearErrMsg struct{}
+	// queueSavedMsg confirms the queue was saved as / appended to a playlist.
+	queueSavedMsg struct {
+		uuid  string
+		name  string
+		count int
+	}
+	clearToastMsg struct{}
 	tickMsg       time.Time
 	barTickMsg    time.Time
 	nowPlayingMsg struct {

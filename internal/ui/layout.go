@@ -148,7 +148,7 @@ func (m *Model) layoutDims() (sidebarW, mainW int) {
 // now-playing bar and footer.
 func (m *Model) bodyHeight() int {
 	h := m.height - nowBarH - footerH
-	if m.errText != "" {
+	if m.errText != "" || m.toast != "" {
 		h--
 	}
 	return max(h, 1)

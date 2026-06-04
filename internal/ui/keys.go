@@ -346,6 +346,8 @@ func (m Model) commonKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.setVolume(m.volume + 5)
 	case "s":
 		m.cycleShuffle()
+	case "S":
+		return m.saveQueueAsNew()
 	case ">", ".":
 		return m.skipNext()
 	case "<", ",":
@@ -459,6 +461,7 @@ func (m Model) skipPrev() (tea.Model, tea.Cmd) {
 
 func (m *Model) radioFrom(t tidal.Track) tea.Cmd {
 	id := t.ID
+	m.pendingQueueSource = "radio" // tracksMsg marks the resulting queue unsaved
 	return func() tea.Msg {
 		tracks, err := m.client.GetTrackRadio(m.ctx, id)
 		if err != nil {

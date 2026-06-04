@@ -168,14 +168,28 @@ func (m *Model) renderCommandPalette(t Theme) string {
 	return renderPanel(t, "COMMAND", true, w, max(h, 5), body)
 }
 
-// beginSaveQueue / beginSaveToExisting are placeholders until the queue-save
-// step wires the create-playlist flow.
+// beginSaveQueue saves the queue as a new playlist.
 func (m Model) beginSaveQueue() (tea.Model, tea.Cmd) {
-	m.errText = "Save queue: coming in the playlist step"
-	return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+	return m.saveQueueAsNew()
 }
 
+// beginSaveToExisting opens the add-to-playlist picker, loading the user's
+// playlists first if they aren't already cached.
 func (m Model) beginSaveToExisting() (tea.Model, tea.Cmd) {
-	m.errText = "Save to playlist: coming in the playlist step"
-	return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+	if len(m.tracks) == 0 {
+		m.errText = "Queue is empty — nothing to save"
+		return m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+	}
+	m.overlay = OverlayAddToPlaylist
+	m.cursor = 0
+	if len(m.playlists) == 0 {
+		return m, func() tea.Msg {
+			pls, err := m.client.GetUserPlaylists(m.ctx)
+			if err != nil {
+				return errMsg(err)
+			}
+			return playlistsMsg(pls)
+		}
+	}
+	return m, nil
 }

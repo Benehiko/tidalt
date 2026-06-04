@@ -6,8 +6,11 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 
+	"github.com/Benehiko/tidalt/v3/internal/store"
 	"github.com/Benehiko/tidalt/v3/internal/tidal"
 )
+
+const srcRadio = "radio"
 
 // newSmokeModel builds a Model without the store/client/player dependencies so
 // the render path can be exercised in isolation.
@@ -20,6 +23,7 @@ func newSmokeModel() Model {
 		{ID: 3, Title: "King For A Day", Artist: tidal.Artist{ID: 9, Name: "Pierce The Veil"}, Duration: 230},
 	}
 	return Model{
+		store:       &store.SecretsStore{}, // nil db => Save* methods no-op
 		searchInput: ti,
 		section:     SecQueue,
 		focusMain:   true,
@@ -165,6 +169,53 @@ func TestLibrarySectionsRender(t *testing.T) {
 		if !strings.Contains(out, c.want) {
 			t.Errorf("section %v should contain %q", c.sec, c.want)
 		}
+	}
+}
+
+// TestQueueHybridStates checks the queue header reflects synced/edited/unsaved
+// origins and that an enqueue marks the queue dirty.
+func TestQueueHybridStates(t *testing.T) {
+	m := newSmokeModel()
+	th := m.theme
+
+	m.queueSource = "playlist:Late Night"
+	m.queuePlaylistUUID = "p1"
+	m.queueDirty = false
+	if got := stripANSI(m.queueHeader(th)); !strings.Contains(got, "synced") {
+		t.Errorf("synced header: %q", got)
+	}
+
+	m.enqueueEnd(m.tracks[0])
+	if !m.queueDirty {
+		t.Errorf("enqueue should mark the queue dirty")
+	}
+	if got := stripANSI(m.queueHeader(th)); !strings.Contains(got, "edited") {
+		t.Errorf("edited header: %q", got)
+	}
+
+	m.queueSource = srcRadio
+	m.queuePlaylistUUID = ""
+	m.queueDirty = false
+	if got := stripANSI(m.queueHeader(th)); !strings.Contains(got, "unsaved") {
+		t.Errorf("radio header: %q", got)
+	}
+}
+
+// TestQueueSavedMsg confirms a save confirmation flips origin to a synced
+// playlist and raises the toast.
+func TestQueueSavedMsg(t *testing.T) {
+	m := newSmokeModel()
+	m.queueSource = srcRadio
+	updated, _ := m.Update(queueSavedMsg{uuid: "new", name: "My Mix", count: 3})
+	nm, ok := updated.(Model)
+	if !ok {
+		t.Fatalf("Update should return a Model")
+	}
+	if nm.queuePlaylistUUID != "new" || nm.queueDirty || nm.queueSource != "playlist:My Mix" {
+		t.Errorf("unexpected post-save state: src=%q uuid=%q dirty=%v", nm.queueSource, nm.queuePlaylistUUID, nm.queueDirty)
+	}
+	if !strings.Contains(nm.toast, "My Mix") {
+		t.Errorf("expected save toast, got %q", nm.toast)
 	}
 }
 
