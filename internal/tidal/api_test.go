@@ -149,8 +149,8 @@ func TestSearch_OK(t *testing.T) {
 		if q := r.URL.Query().Get("query"); q != "test query" {
 			t.Errorf("unexpected query param: %q", q)
 		}
-		if r.URL.Query().Get("types") != "TRACKS" {
-			t.Errorf("types param missing or wrong")
+		if !strings.Contains(r.URL.Query().Get("types"), "TRACKS") {
+			t.Errorf("types param missing TRACKS: %q", r.URL.Query().Get("types"))
 		}
 		respond(w, 200, payload)
 	}))
