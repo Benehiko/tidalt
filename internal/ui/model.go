@@ -647,6 +647,29 @@ func (m Model) Init() tea.Cmd {
 			}
 			return mixesMsg(mixes)
 		},
+		// Prefetch the library sections so the sidebar counts are correct at
+		// launch instead of showing 0 until the section is first opened.
+		func() tea.Msg {
+			pls, err := m.client.GetUserPlaylists(m.ctx)
+			if err != nil {
+				return errMsg(err)
+			}
+			return playlistsMsg(pls)
+		},
+		func() tea.Msg {
+			artists, err := m.client.GetFavoriteArtists(m.ctx, 200)
+			if err != nil {
+				return errMsg(err)
+			}
+			return favArtistsMsg(artists)
+		},
+		func() tea.Msg {
+			albums, err := m.client.GetFavoriteAlbums(m.ctx, 200)
+			if err != nil {
+				return errMsg(err)
+			}
+			return favAlbumsMsg(albums)
+		},
 		m.waitForContextCancel(),
 		tickCmd(),
 		barTickCmd(),

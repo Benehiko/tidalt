@@ -219,6 +219,9 @@ func (m *Model) loadSection(sec Section) tea.Cmd {
 			return mixesMsg(mixes)
 		}
 	case SecPlaylists:
+		if len(m.playlists) > 0 {
+			return nil
+		}
 		return func() tea.Msg {
 			pls, err := m.client.GetUserPlaylists(m.ctx)
 			if err != nil {
@@ -227,6 +230,9 @@ func (m *Model) loadSection(sec Section) tea.Cmd {
 			return playlistsMsg(pls)
 		}
 	case SecFavArtists:
+		if len(m.favArtists) > 0 {
+			return nil
+		}
 		return func() tea.Msg {
 			artists, err := m.client.GetFavoriteArtists(m.ctx, 200)
 			if err != nil {
@@ -235,6 +241,9 @@ func (m *Model) loadSection(sec Section) tea.Cmd {
 			return favArtistsMsg(artists)
 		}
 	case SecFavAlbums:
+		if len(m.favAlbums) > 0 {
+			return nil
+		}
 		return func() tea.Msg {
 			albums, err := m.client.GetFavoriteAlbums(m.ctx, 200)
 			if err != nil {
