@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/Benehiko/tidalt/v3/internal/tidal"
+	"github.com/Benehiko/tidalt/v4/internal/tidal"
 )
 
 // searchRowKind identifies what a flattened search result row points at.

@@ -4,8 +4,8 @@ import (
 	"image"
 	"time"
 
-	"github.com/Benehiko/tidalt/v3/internal/mpris"
-	"github.com/Benehiko/tidalt/v3/internal/tidal"
+	"github.com/Benehiko/tidalt/v4/internal/mpris"
+	"github.com/Benehiko/tidalt/v4/internal/tidal"
 )
 
 // tea.Msg types delivered to Model.Update. Grouped here so the message contract

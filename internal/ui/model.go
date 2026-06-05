@@ -15,11 +15,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Benehiko/tidalt/v3/internal/logger"
-	"github.com/Benehiko/tidalt/v3/internal/mpris"
-	"github.com/Benehiko/tidalt/v3/internal/player"
-	"github.com/Benehiko/tidalt/v3/internal/store"
-	"github.com/Benehiko/tidalt/v3/internal/tidal"
+	"github.com/Benehiko/tidalt/v4/internal/logger"
+	"github.com/Benehiko/tidalt/v4/internal/mpris"
+	"github.com/Benehiko/tidalt/v4/internal/player"
+	"github.com/Benehiko/tidalt/v4/internal/store"
+	"github.com/Benehiko/tidalt/v4/internal/tidal"
 )
 
 // ShuffleMode controls how the track list is shuffled.

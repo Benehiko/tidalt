@@ -10,8 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Benehiko/tidalt/v3/internal/store"
-	"github.com/Benehiko/tidalt/v3/internal/tidal"
+	"github.com/Benehiko/tidalt/v4/internal/store"
+	"github.com/Benehiko/tidalt/v4/internal/tidal"
 )
 
 // asModel is a test helper for the (tea.Model -> Model) assertion.

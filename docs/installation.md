@@ -85,7 +85,7 @@ sudo dnf install golang alsa-lib-devel libavformat-free-devel libavcodec-free-de
 ### go install
 
 ```bash
-go install github.com/Benehiko/tidalt/v3/cmd/tidalt@latest
+go install github.com/Benehiko/tidalt/v4/cmd/tidalt@latest
 ```
 
 The binary is placed in `$GOPATH/bin` (typically `~/go/bin`). Make sure that

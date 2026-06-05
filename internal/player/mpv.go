@@ -145,7 +145,7 @@ import (
 	"time"
 	"unsafe" //nolint:gocritic // dupImport false positive: cgo "C" pseudo-package aliases unsafe
 
-	"github.com/Benehiko/tidalt/v3/internal/logger"
+	"github.com/Benehiko/tidalt/v4/internal/logger"
 
 	"github.com/godbus/dbus/v5"
 )

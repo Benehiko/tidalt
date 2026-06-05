@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/Benehiko/tidalt/v3/internal/mpris"
+	"github.com/Benehiko/tidalt/v4/internal/mpris"
 )
 
 // playLog returns a logger that writes to ~/.local/share/tidalt/play.log.

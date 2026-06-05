@@ -11,10 +11,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/sys/unix"
 
-	"github.com/Benehiko/tidalt/v3/internal/mpris"
-	"github.com/Benehiko/tidalt/v3/internal/store"
-	"github.com/Benehiko/tidalt/v3/internal/tidal"
-	"github.com/Benehiko/tidalt/v3/internal/ui"
+	"github.com/Benehiko/tidalt/v4/internal/mpris"
+	"github.com/Benehiko/tidalt/v4/internal/store"
+	"github.com/Benehiko/tidalt/v4/internal/tidal"
+	"github.com/Benehiko/tidalt/v4/internal/ui"
 )
 
 // readPassphrase reads a passphrase from stdin with echo disabled.

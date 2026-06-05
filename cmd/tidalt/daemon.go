@@ -9,8 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/Benehiko/tidalt/v3/internal/mpris"
-	"github.com/Benehiko/tidalt/v3/internal/ui"
+	"github.com/Benehiko/tidalt/v4/internal/mpris"
+	"github.com/Benehiko/tidalt/v4/internal/ui"
 )
 
 // systemd user service unit template.
