@@ -163,6 +163,10 @@ type Model struct {
 	// and target height for each equaliser bar.
 	barHeights [9]int // current height scaled ×10
 	barTargets [9]int // target height scaled ×10
+	// barsTicking is true while the fast (80ms) equaliser tick is scheduled. It
+	// lapses when playback stops and is restarted by the 1s tick on resume, so
+	// the UI doesn't re-render 12×/s while idle.
+	barsTicking bool
 
 	// MPRIS media key commands (nil in client mode)
 	mprisCh <-chan mpris.Event
@@ -210,6 +214,12 @@ type Model struct {
 	// drawn with the Kitty graphics protocol (overlaid in View at absolute
 	// coordinates), otherwise Unicode block art is used.
 	kittySupported bool
+
+	// kitty caches the expensive PNG-encode + tracks what was last emitted so
+	// the image escape is only re-encoded/re-sent on a real change (new cover
+	// or resize), not on every animation frame. Pointer-backed so the
+	// value-receiver View can update it.
+	kitty *kittyState
 
 	// Theme / color scheme.
 	// themeName is the registry key persisted to the store; palette is the
@@ -584,6 +594,16 @@ func barTickCmd() tea.Cmd {
 	})
 }
 
+// ensureBarsTicking returns the command to (re)start the fast equaliser tick if
+// it has lapsed, marking it running. Returns nil when it is already scheduled.
+func (m *Model) ensureBarsTicking() []tea.Cmd {
+	if m.barsTicking {
+		return nil
+	}
+	m.barsTicking = true
+	return []tea.Cmd{barTickCmd()}
+}
+
 // waitForTrackDone returns a command that blocks until the given done channel
 // is closed (i.e. the track finished naturally), then sends a trackDoneMsg.
 // Callers should pass the channel returned by player.Play() directly so there
@@ -671,7 +691,8 @@ func (m Model) Init() tea.Cmd {
 		},
 		m.waitForContextCancel(),
 		tickCmd(),
-		barTickCmd(),
+		// The fast equaliser tick is started on demand by the 1s tick / playback
+		// start (ensureBarsTicking) so an idle UI doesn't re-render 12×/s.
 	}
 	if !m.clientMode {
 		cmds = append(cmds, listenMPRIS(m.mprisCh))
@@ -821,7 +842,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.restorePosition = 0
 			_ = m.player.Seek(pos)
 		}
-		return m, tea.Batch(waitForTrackDone(msg.done, msg.gen), m.maybeUpdateCover(m.currentTrack))
+		bars := m.ensureBarsTicking()
+		cmds := make([]tea.Cmd, 0, 2+len(bars))
+		cmds = append(cmds, waitForTrackDone(msg.done, msg.gen), m.maybeUpdateCover(m.currentTrack))
+		cmds = append(cmds, bars...)
+		return m, tea.Batch(cmds...)
 
 	case coverLoadedMsg:
 		if msg.key == m.coverCacheKey {
@@ -831,7 +856,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case barTickMsg:
 		m.barFrame++
 		updateBars(m.barFrame, &m.barHeights, &m.barTargets, m.isPlaying)
-		return m, barTickCmd()
+		// The fast equaliser animation only needs to run while playing — when
+		// stopped the bars are flat and re-rendering 12×/s is wasted work. Drop
+		// to the 1s logo tick when idle; the 1s tick restarts this one when
+		// playback resumes.
+		if m.isPlaying {
+			return m, barTickCmd()
+		}
+		m.barsTicking = false
+		return m, nil
 
 	case tickMsg:
 		m.logoFrame++
@@ -846,10 +879,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.store.SaveLastPosition(m.currPos)
 			m.pushState()
 		}
-		if m.clientMode {
-			return m, tea.Batch(tickCmd(), pollParentState(m.mprisClient))
+		cmds := []tea.Cmd{tickCmd()}
+		// Restart the fast equaliser tick if playback resumed while it was idle
+		// (covers client-mode playback and MPRIS-driven resume).
+		if m.isPlaying {
+			cmds = append(cmds, m.ensureBarsTicking()...)
 		}
-		return m, tickCmd()
+		if m.clientMode {
+			cmds = append(cmds, pollParentState(m.mprisClient))
+		}
+		return m, tea.Batch(cmds...)
 
 	case parentStateMsg:
 		ps := mpris.PlayerState(msg)
@@ -1259,16 +1298,9 @@ func (m Model) View() string {
 		view = m.renderOverlay(t, view)
 	}
 
-	// Manage the Kitty cover image. When the Now-Playing pane is drawing it,
-	// overlay the real image at the reserved box's absolute coordinates;
-	// otherwise delete any lingering image (Kitty images live outside the cell
-	// grid, so leaving a section does not erase them on its own).
+	// Manage the Kitty cover image (memoized; only emits on a real change).
 	if m.kittySupported {
-		if m.section == SecNowPlaying && m.useKittyCover() {
-			view += m.kittyCoverOverlay()
-		} else {
-			view += kittyClearAll()
-		}
+		view += m.kittyFrame()
 	}
 	return view
 }
@@ -1278,18 +1310,45 @@ func (m Model) View() string {
 // cells derived from the layout: the main pane begins after the sidebar + gap,
 // the panel border adds one column/row, and the cover box is the pane's first
 // inner rows.
-func (m *Model) kittyCoverOverlay() string {
+// kittyFrame returns the Kitty escape to append to this frame and updates the
+// memoized draw state. The expensive PNG encode runs only when the cover or box
+// geometry changes; the draw escape is emitted only when the on-screen image
+// must change (cover appears, changes, or must be cleared), so animation frames
+// that don't touch the cover send nothing — keeping navigation snappy.
+func (m *Model) kittyFrame() string {
+	if m.kitty == nil {
+		m.kitty = &kittyState{}
+	}
+	ks := m.kitty
+
+	if m.section != SecNowPlaying || !m.useKittyCover() {
+		// Cover should not be shown: clear it once, then stay quiet.
+		if ks.drawnKey != "" {
+			ks.drawnKey = ""
+			return kittyClearAll()
+		}
+		return ""
+	}
+
 	sidebarW, _ := m.layoutDims()
 	panelW, imgRows := m.coverPaneDims()
-
 	mainLeft := 0
 	if sidebarW > 0 {
 		mainLeft = sidebarW + zoneGap
 	}
-	col := mainLeft + 1 /* panel left border */ + 1 /* to 1-indexed */
-	row := 1 /* panel top border */ + 1             /* to 1-indexed */
+	col := mainLeft + 2 // panel left border + 1-indexed
+	row := 2            // panel top border + 1-indexed
 
-	return kittyImageAt(m.coverImage, col, row, panelW, imgRows)
+	key := fmt.Sprintf("%s@%dx%d+%d,%d", m.coverCacheKey, panelW, imgRows, col, row)
+	if ks.drawnKey == key {
+		return "" // already on screen unchanged — emit nothing
+	}
+	if ks.encodeKey != key {
+		ks.escape = kittyImageAt(m.coverImage, col, row, panelW, imgRows)
+		ks.encodeKey = key
+	}
+	ks.drawnKey = key
+	return ks.escape
 }
 
 // footerKeyBar returns the context-sensitive key hint bar for the current

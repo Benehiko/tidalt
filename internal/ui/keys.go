@@ -439,6 +439,9 @@ func (m Model) togglePlay() (tea.Model, tea.Cmd) {
 	_ = m.player.Pause()
 	m.isPlaying = !m.isPlaying
 	m.pushState()
+	if m.isPlaying {
+		return m, tea.Batch(m.ensureBarsTicking()...)
+	}
 	return m, nil
 }
 
