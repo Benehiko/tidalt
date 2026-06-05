@@ -1,3 +1,10 @@
+tidalt (4.0.0-1) unstable; urgency=medium
+
+  * TUI redesign: sidebar + main-pane layout (Direction 2).
+  * Module path bumped to /v4.
+
+ -- Benehiko <https://github.com/Benehiko>  Fri, 05 Jun 2026 00:00:00 +0000
+
 tidalt (3.0.0-1) unstable; urgency=medium
 
   * Initial Debian packaging.

@@ -17,6 +17,10 @@ import (
 	"github.com/Benehiko/tidalt/v4/internal/ui"
 )
 
+// version is the build version, injected at release time via
+// -ldflags "-X main.version=v<X.Y.Z>". It is "dev" for local builds.
+var version = "dev"
+
 // readPassphrase reads a passphrase from stdin with echo disabled.
 func readPassphrase(_ context.Context, prompt string) ([]byte, error) {
 	fmt.Print(prompt + ": ")
@@ -125,6 +129,9 @@ func dispatch() error {
 		return runDaemon()
 	case "logout":
 		runLogout()
+		return nil
+	case "version", "--version", "-v":
+		fmt.Println("tidalt " + version)
 		return nil
 	default:
 		// Treat os.Args[1] as an optional tidal:// or https://tidal.com/ URL
