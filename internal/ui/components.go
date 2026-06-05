@@ -254,8 +254,13 @@ func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 	}
 
 	eq := miniEQ(t, m.barHeights, m.isPlaying)
-	title := t.RowPlaying.Render(truncateStr(m.currentTrack.Title, inner-lipgloss.Width(eq)-1))
-	head := eq + " " + title
+	// Right-aligned status (volume / device / shuffle) on the title row.
+	status := m.nowBarStatus(t)
+	titleRoom := max(inner-lipgloss.Width(eq)-1-lipgloss.Width(status)-1, 1)
+	title := t.RowPlaying.Render(truncateStr(m.currentTrack.Title, titleRoom))
+	left := eq + " " + title
+	pad := max(inner-lipgloss.Width(left)-lipgloss.Width(status), 0)
+	head := left + strings.Repeat(" ", pad) + status
 	artist := t.RowDim.Render(truncateStr(m.currentTrack.Artist.Name, inner))
 
 	percent := 0.0
@@ -267,6 +272,22 @@ func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 
 	body := strings.Join([]string{head, artist, bar + timeStr}, "\n")
 	return renderPanel(t, "", false, w, 5, body)
+}
+
+// nowBarStatus renders the compact volume / device / shuffle readout shown at
+// the right of the now-playing bar.
+func (m *Model) nowBarStatus(t Theme) string {
+	vol := fmt.Sprintf("vol %.0f%%", m.volume)
+	parts := []string{vol}
+	if m.shuffleMode != ShuffleOff {
+		parts = append(parts, "shuffle "+m.shuffleMode.String())
+	}
+	dev := m.currentDevice
+	if dev == "" {
+		dev = "auto"
+	}
+	parts = append(parts, dev)
+	return t.RowDim.Render(strings.Join(parts, "  ·  "))
 }
 
 // miniEQ renders a tiny 4-bar equalizer indicator from the live bar heights.
