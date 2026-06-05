@@ -107,6 +107,11 @@ type Model struct {
 	artistCursor  int
 	artistLoading bool
 	showArtist    bool // true while the transient artist drill-down is open
+	// Album drill-down within the artist view: when an album is opened its
+	// tracks are listed here (artistAlbum != nil) before being loaded to queue.
+	artistAlbum       *tidal.Album
+	artistAlbumTracks []tidal.Track
+	artistAlbumCursor int
 
 	// Library data loaded on demand for the favorites/playlists sections.
 	favSongs   []tidal.Track // the favorite-songs list (SecFavSongs)
@@ -1120,8 +1125,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.artistAlbums = msg.albums
 		m.artistCursor = 0
 		m.artistLoading = false
+		m.artistAlbum = nil
+		m.artistAlbumTracks = nil
 		m.showArtist = true
 		m.focusMain = true
+
+	case artistAlbumTracksMsg:
+		album := msg.album
+		m.artistAlbum = &album
+		m.artistAlbumTracks = msg.tracks
+		m.artistAlbumCursor = 0
+		m.artistLoading = false
 
 	case errMsg:
 		m.errText = msg.Error()

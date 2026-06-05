@@ -156,12 +156,16 @@ func (m *Model) renderMixesPane(t Theme, w, h int) string {
 }
 
 // renderArtistPane renders the transient artist drill-down: two synthetic
-// quick-play rows followed by the artist's albums.
+// quick-play rows followed by the artist's albums. When an album is open it
+// shows that album's track list instead.
 func (m *Model) renderArtistPane(t Theme, w, h int) string {
+	if m.artistAlbum != nil {
+		return m.renderArtistAlbumPane(t, w, h)
+	}
 	innerW := max(w-2, 1)
 	var rows []string
 	if m.artistLoading {
-		rows = append(rows, t.RowDim.Render("Loading artist…"))
+		rows = append(rows, t.RowDim.Render("Loading album…"))
 	} else {
 		total := len(m.artistAlbums) + 2
 		for i := range total {
@@ -195,6 +199,30 @@ func (m *Model) renderArtistPane(t Theme, w, h int) string {
 	}
 	title := "ARTIST · " + strings.ToUpper(m.artistName)
 	return renderListPanel(t, title, true, rows, m.artistCursor, w, h)
+}
+
+// renderArtistAlbumPane lists the tracks of an album opened inside the artist
+// drill-down.
+func (m *Model) renderArtistAlbumPane(t Theme, w, h int) string {
+	innerW := max(w-2, 1)
+	rows := make([]string, 0, len(m.artistAlbumTracks))
+	for i := range m.artistAlbumTracks {
+		tr := m.artistAlbumTracks[i]
+		rows = append(rows, renderTrackRow(t, tr, rowOpts{
+			selected:  i == m.artistAlbumCursor,
+			playing:   m.currentTrack != nil && m.currentTrack.ID == tr.ID && m.isPlaying,
+			fav:       m.favorites[tr.ID],
+			showIndex: true,
+			index:     i + 1,
+			width:     innerW,
+			duration:  tr.Duration,
+		}))
+	}
+	if len(rows) == 0 {
+		rows = append(rows, t.RowDim.Render("No tracks."))
+	}
+	title := "ALBUM · " + strings.ToUpper(m.artistAlbum.Title)
+	return renderListPanel(t, title, true, rows, m.artistAlbumCursor, w, h)
 }
 
 // useKittyCover reports whether the Now-Playing cover should be drawn with the

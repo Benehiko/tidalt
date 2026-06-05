@@ -259,9 +259,13 @@ func (m *Model) loadSection(sec Section) tea.Cmd {
 
 // updateSection routes keys to the active section's handler.
 func (m Model) updateSection(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Esc backs out of the artist drill-down, else returns focus to the sidebar.
+	// Esc backs out one level: album → artist albums → close artist → sidebar.
 	if k.String() == keyEsc {
 		switch {
+		case m.showArtist && m.artistAlbum != nil:
+			m.artistAlbum = nil
+			m.artistAlbumTracks = nil
+			m.artistAlbumCursor = 0
 		case m.showArtist:
 			m.showArtist = false
 		case m.section == SecPlaylists && m.detailFocus:
@@ -580,6 +584,10 @@ func (m Model) openArtistFor(t *tidal.Track) (tea.Model, tea.Cmd) {
 
 // updateArtist handles the transient artist drill-down sub-view.
 func (m Model) updateArtist(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When an album is open, navigate its track list instead of the album list.
+	if m.artistAlbum != nil {
+		return m.updateArtistAlbum(k)
+	}
 	switch k.String() {
 	case keyUp, "k":
 		if m.artistCursor > 0 {
@@ -612,18 +620,54 @@ func (m Model) updateArtist(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return tracksMsg(tracks)
 			}
 		default:
+			// Open the album to view its tracks (does not load the queue yet).
 			if idx := m.artistCursor - 2; idx >= 0 && idx < len(m.artistAlbums) {
-				albumID := strconv.Itoa(m.artistAlbums[idx].ID)
+				album := m.artistAlbums[idx]
+				albumID := strconv.Itoa(album.ID)
+				m.artistLoading = true
 				return m, func() tea.Msg {
 					tracks, err := m.client.GetAlbumTracks(m.ctx, albumID)
 					if err != nil {
 						return errMsg(err)
 					}
-					return tracksMsg(tracks)
+					return artistAlbumTracksMsg{album: album, tracks: tracks}
 				}
 			}
 		}
 		return m, nil
+	}
+	return m.commonKeys(k)
+}
+
+// updateArtistAlbum navigates the track list of an album opened inside the
+// artist drill-down. Esc backs out to the album list; Enter loads the album
+// into the queue and plays from the selected track.
+func (m Model) updateArtistAlbum(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case keyEsc:
+		m.artistAlbum = nil
+		m.artistAlbumTracks = nil
+		m.artistAlbumCursor = 0
+		return m, nil
+	case keyUp, "k":
+		if m.artistAlbumCursor > 0 {
+			m.artistAlbumCursor--
+		}
+		return m, nil
+	case keyDown, "j":
+		if m.artistAlbumCursor < len(m.artistAlbumTracks)-1 {
+			m.artistAlbumCursor++
+		}
+		return m, nil
+	case keyEnter:
+		tracks := m.artistAlbumTracks
+		i := m.artistAlbumCursor
+		m.showArtist = false
+		m.artistAlbum = nil
+		m.section = SecQueue
+		m.sidebarCursor = navIndexOf(SecQueue)
+		cmd := m.playListIntoQueue(tracks, i)
+		return m, cmd
 	}
 	return m.commonKeys(k)
 }

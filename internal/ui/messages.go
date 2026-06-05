@@ -37,6 +37,12 @@ type (
 		artistName string
 		albums     []tidal.Album
 	}
+	// artistAlbumTracksMsg carries the tracks of an album opened inside the
+	// artist drill-down (shown as a sub-list before loading into the queue).
+	artistAlbumTracksMsg struct {
+		album  tidal.Album
+		tracks []tidal.Track
+	}
 	errMsg      error
 	clearErrMsg struct{}
 	// queueSavedMsg confirms the queue was saved as / appended to a playlist.
