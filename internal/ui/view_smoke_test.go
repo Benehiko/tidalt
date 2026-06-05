@@ -420,6 +420,43 @@ func TestRemoveFromQueue(t *testing.T) {
 	}
 }
 
+// TestHistoryEnterLoadsQueue ensures playing from Recently Played loads the
+// history into the queue (so auto-advance has something to follow), not just a
+// single track.
+func TestHistoryEnterLoadsQueue(t *testing.T) {
+	m := newSmokeModel()
+	m.tracks = nil
+	m.tracksOrder = nil
+	m.section = SecHistory
+	m.history = []tidal.Track{
+		{ID: 10, Title: "H1"}, {ID: 11, Title: "H2"}, {ID: 12, Title: "H3"},
+	}
+	m.cursor = 1
+	res, _ := m.updateHistory(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := asModel(t, res)
+	if len(nm.tracks) != len(m.history) {
+		t.Fatalf("history play should load %d tracks into the queue, got %d", len(m.history), len(nm.tracks))
+	}
+	if nm.cursor != 1 || nm.tracks[1].ID != 11 {
+		t.Errorf("queue should be positioned at the chosen track (id 11), got cursor %d id %d", nm.cursor, nm.tracks[nm.cursor].ID)
+	}
+}
+
+// TestClearQueue empties the queue.
+func TestClearQueue(t *testing.T) {
+	m := newSmokeModel()
+	if len(m.tracks) == 0 {
+		t.Fatal("precondition: queue should be non-empty")
+	}
+	m.clearQueue()
+	if len(m.tracks) != 0 || len(m.tracksOrder) != 0 {
+		t.Errorf("clearQueue should empty the queue, got %d/%d", len(m.tracks), len(m.tracksOrder))
+	}
+	if m.queueSource != "" || m.queueDirty {
+		t.Errorf("clearQueue should reset queue origin")
+	}
+}
+
 // TestHistoryHasCount ensures Recently Played reports a sidebar count.
 func TestHistoryHasCount(t *testing.T) {
 	m := newSmokeModel()

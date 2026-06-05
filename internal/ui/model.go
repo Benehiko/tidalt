@@ -1374,6 +1374,7 @@ func (m *Model) footerKeyBar(t Theme, w int) string {
 			{"j/k", "Move"},
 			{"↵", "Play"},
 			{"x", "Remove"},
+			{"C", "Clear"},
 			{"S", "Save"},
 			{"o", "Actions"},
 			{":", "Command"},
