@@ -381,6 +381,54 @@ func TestNowPlayingCoverComposes(t *testing.T) {
 	}
 }
 
+// TestFavSongsDistinctFromQueue ensures the Songs section shows the favorite
+// songs, not the playback queue.
+func TestFavSongsDistinctFromQueue(t *testing.T) {
+	m := newSmokeModel()
+	m.width, m.height = 90, 16
+	m.favSongs = []tidal.Track{{ID: 99, Title: "A Liked Song", Artist: tidal.Artist{Name: "Fav Artist"}}}
+	m.section = SecFavSongs
+	out := stripANSI(m.View())
+	if !strings.Contains(out, "A Liked Song") {
+		t.Errorf("Songs section should list favorite songs")
+	}
+	if strings.Contains(out, "May These Noises") {
+		t.Errorf("Songs section must not show the queue tracks")
+	}
+	if got := m.sectionCount(SecFavSongs); got != 1 {
+		t.Errorf("favorite songs count = %d, want 1", got)
+	}
+}
+
+// TestRemoveFromQueue drops the cursor track and marks the queue edited.
+func TestRemoveFromQueue(t *testing.T) {
+	m := newSmokeModel()
+	before := len(m.tracks)
+	id := m.tracks[1].ID
+	m.cursor = 1
+	m.removeFromQueue(1)
+	if len(m.tracks) != before-1 {
+		t.Fatalf("expected %d tracks after removal, got %d", before-1, len(m.tracks))
+	}
+	for _, tr := range m.tracks {
+		if tr.ID == id {
+			t.Errorf("removed track %d is still in the queue", id)
+		}
+	}
+	if !m.queueDirty {
+		t.Errorf("removal should mark the queue dirty")
+	}
+}
+
+// TestHistoryHasCount ensures Recently Played reports a sidebar count.
+func TestHistoryHasCount(t *testing.T) {
+	m := newSmokeModel()
+	m.history = m.tracks
+	if got := m.sectionCount(SecHistory); got != len(m.tracks) {
+		t.Errorf("history count = %d, want %d", got, len(m.tracks))
+	}
+}
+
 // TestClientTintRenders confirms client mode renders without panic and the
 // theme tint applies.
 func TestClientTintRenders(t *testing.T) {
