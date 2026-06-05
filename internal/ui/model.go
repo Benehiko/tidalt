@@ -1259,10 +1259,16 @@ func (m Model) View() string {
 		view = m.renderOverlay(t, view)
 	}
 
-	// Overlay the Now-Playing cover with a real Kitty image at the absolute
-	// coordinates of the blank box reserved in renderNowPlayingPane.
-	if m.section == SecNowPlaying && m.useKittyCover() {
-		view += m.kittyCoverOverlay()
+	// Manage the Kitty cover image. When the Now-Playing pane is drawing it,
+	// overlay the real image at the reserved box's absolute coordinates;
+	// otherwise delete any lingering image (Kitty images live outside the cell
+	// grid, so leaving a section does not erase them on its own).
+	if m.kittySupported {
+		if m.section == SecNowPlaying && m.useKittyCover() {
+			view += m.kittyCoverOverlay()
+		} else {
+			view += kittyClearAll()
+		}
 	}
 	return view
 }

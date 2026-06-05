@@ -25,6 +25,14 @@ func KittySupported() bool {
 // kittyChunkSize is the maximum base64 payload length per Kitty APC chunk.
 const kittyChunkSize = 4096
 
+// kittyClearAll returns the Kitty escape that deletes every image placement on
+// screen. Kitty images live outside the terminal's cell grid, so redrawing the
+// text frame does not erase them — this must be emitted on any frame that does
+// not (re)draw the cover, or a stale image lingers.
+func kittyClearAll() string {
+	return "\x1b_Ga=d,d=A\x1b\\"
+}
+
 // kittyImageAt returns a Kitty escape that draws img occupying exactly cols×rows
 // terminal cells, positioned at the absolute 1-indexed screen coordinates
 // (row, col). The cursor is saved and restored around the draw so it can be
