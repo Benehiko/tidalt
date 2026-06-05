@@ -25,56 +25,32 @@ func KittySupported() bool {
 // kittyChunkSize is the maximum base64 payload length per Kitty APC chunk.
 const kittyChunkSize = 4096
 
-// kittyRowSequences slices img into rows horizontal strips and returns a
-// Kitty terminal graphics protocol escape sequence for each strip.  Each
-// sequence renders its strip inline at the current cursor position, occupying
-// cols terminal columns and exactly 1 terminal row (r=1).
+// kittyImageAt returns a Kitty escape that draws img occupying exactly cols×rows
+// terminal cells, positioned at the absolute 1-indexed screen coordinates
+// (row, col). The cursor is saved and restored around the draw so it can be
+// appended to a fully-rendered frame without disturbing the layout underneath.
 //
-// Using r=1 per sequence matches BubbleTea's line-based rendering: after a
-// r=1 Kitty sequence the terminal cursor is at the end of the current line,
-// and the trailing "\n" in the rendered frame advances exactly one row — the
-// same as any other line.
-//
-// The image is scaled to 320×320 before slicing; each strip is a 320-pixel-
-// wide sub-image of height (320 / rows), PNG-encoded and base64-chunked.
-func kittyRowSequences(img image.Image, cols, rows int) []string {
+// Unlike kittyRowSequences this transmits the whole image in one placement
+// (c=cols, r=rows), which is both crisper and avoids the per-row seams.
+func kittyImageAt(img image.Image, col, row, cols, rows int) string {
 	if img == nil || cols <= 0 || rows <= 0 {
-		return nil
+		return ""
 	}
+	// Scale to a generous pixel size for sharpness; the terminal maps it onto
+	// the cols×rows cell box regardless of pixel dimensions.
+	const targetPx = 640
+	scaled := image.NewRGBA(image.Rect(0, 0, targetPx, targetPx))
+	draw.CatmullRom.Scale(scaled, scaled.Bounds(), img, img.Bounds(), draw.Over, nil)
 
-	const targetPx = 320
-
-	rowPx := max(targetPx/rows, 1)
-
-	// Scale the full image to 320 × (rowPx*rows) so each slice is uniform.
-	scaledH := rowPx * rows
-	scaled := image.NewRGBA(image.Rect(0, 0, targetPx, scaledH))
-	draw.BiLinear.Scale(scaled, scaled.Bounds(), img, img.Bounds(), draw.Over, nil)
-
-	seqs := make([]string, rows)
-	for i := range rows {
-		y0 := i * rowPx
-		y1 := y0 + rowPx
-
-		// Extract the strip as a sub-image and encode as PNG.
-		strip := scaled.SubImage(image.Rect(0, y0, targetPx, y1))
-		var buf bytes.Buffer
-		if err := png.Encode(&buf, strip); err != nil {
-			seqs[i] = strings.Repeat(" ", cols)
-			continue
-		}
-
-		encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
-		seqs[i] = kittyChunked(encoded, cols)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, scaled); err != nil {
+		return ""
 	}
-	return seqs
-}
+	encoded := base64.StdEncoding.EncodeToString(buf.Bytes())
 
-// kittyChunked wraps base64-encoded image data in one or more Kitty APC
-// sequences with c=cols, r=1.  Large payloads are split into kittyChunkSize
-// chunks using the m= (more) flag.
-func kittyChunked(encoded string, cols int) string {
 	var sb strings.Builder
+	// Save cursor, move to the box's top-left, draw, restore cursor.
+	fmt.Fprintf(&sb, "\x1b7\x1b[%d;%dH", row, col)
 	for i := 0; i < len(encoded); i += kittyChunkSize {
 		end := min(i+kittyChunkSize, len(encoded))
 		chunk := encoded[i:end]
@@ -83,10 +59,11 @@ func kittyChunked(encoded string, cols int) string {
 			more = 0
 		}
 		if i == 0 {
-			fmt.Fprintf(&sb, "\x1b_Ga=T,f=100,c=%d,r=1,q=2,m=%d;%s\x1b\\", cols, more, chunk)
+			fmt.Fprintf(&sb, "\x1b_Ga=T,f=100,c=%d,r=%d,q=2,m=%d;%s\x1b\\", cols, rows, more, chunk)
 		} else {
 			fmt.Fprintf(&sb, "\x1b_Gm=%d;%s\x1b\\", more, chunk)
 		}
 	}
+	sb.WriteString("\x1b8") // restore cursor
 	return sb.String()
 }

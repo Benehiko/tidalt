@@ -205,12 +205,10 @@ type Model struct {
 	coverImage    image.Image // nil while loading or unavailable
 	coverCacheKey string      // UUID of the currently displayed cover
 
-	// Kitty terminal graphics protocol support.
-	// kittySupported is set once at startup.  kittyRows holds the pre-generated
-	// per-row Kitty sequences for the current cover at the current panel size;
-	// it is regenerated whenever the cover or terminal height changes.
+	// kittySupported is set once at startup; when true the Now-Playing cover is
+	// drawn with the Kitty graphics protocol (overlaid in View at absolute
+	// coordinates), otherwise Unicode block art is used.
 	kittySupported bool
-	kittyRows      []string
 
 	// Theme / color scheme.
 	// themeName is the registry key persisted to the store; palette is the
@@ -758,7 +756,6 @@ func (m *Model) maybeUpdateCover(t *tidal.Track) tea.Cmd {
 	}
 	m.coverImage = nil
 	m.coverCacheKey = cover
-	m.kittyRows = nil
 	return fetchCoverCmd(cover)
 }
 
@@ -773,17 +770,6 @@ func (m *Model) coverPaneDims() (panelW, imgRows int) {
 	return panelW, imgRows
 }
 
-// regenKittyRows rebuilds m.kittyRows from the current coverImage at the
-// Now-Playing pane's geometry.
-func (m *Model) regenKittyRows() {
-	if !m.kittySupported || m.coverImage == nil {
-		m.kittyRows = nil
-		return
-	}
-	panelW, imgRows := m.coverPaneDims()
-	m.kittyRows = kittyRowSequences(m.coverImage, panelW, imgRows)
-}
-
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
@@ -795,7 +781,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.rebuildProgress()
-		m.regenKittyRows()
 
 	case nowPlayingMsg:
 		if msg.gen != m.skipGen {
@@ -840,7 +825,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case coverLoadedMsg:
 		if msg.key == m.coverCacheKey {
 			m.coverImage = msg.img
-			m.regenKittyRows()
 		}
 
 	case barTickMsg:
@@ -1271,7 +1255,32 @@ func (m Model) View() string {
 	if m.overlay != OverlayNone {
 		view = m.renderOverlay(t, view)
 	}
+
+	// Overlay the Now-Playing cover with a real Kitty image at the absolute
+	// coordinates of the blank box reserved in renderNowPlayingPane.
+	if m.section == SecNowPlaying && m.useKittyCover() {
+		view += m.kittyCoverOverlay()
+	}
 	return view
+}
+
+// kittyCoverOverlay returns the Kitty escape that draws the cover image over the
+// blank box reserved in the Now-Playing pane. Coordinates are 1-indexed screen
+// cells derived from the layout: the main pane begins after the sidebar + gap,
+// the panel border adds one column/row, and the cover box is the pane's first
+// inner rows.
+func (m *Model) kittyCoverOverlay() string {
+	sidebarW, _ := m.layoutDims()
+	panelW, imgRows := m.coverPaneDims()
+
+	mainLeft := 0
+	if sidebarW > 0 {
+		mainLeft = sidebarW + zoneGap
+	}
+	col := mainLeft + 1 /* panel left border */ + 1 /* to 1-indexed */
+	row := 1 /* panel top border */ + 1             /* to 1-indexed */
+
+	return kittyImageAt(m.coverImage, col, row, panelW, imgRows)
 }
 
 // footerKeyBar returns the context-sensitive key hint bar for the current

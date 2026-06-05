@@ -168,17 +168,10 @@ func rgbaOf(c color.Color) color.RGBA {
 }
 
 // coverPanelLines returns h lines of text for the right-side panel showing
-// the album art and track metadata.  w is the panel width in terminal columns.
-//
-// If kittyRows is non-nil (Kitty terminal graphics protocol supported and
-// sequences pre-generated), each art row is rendered as a Kitty inline image
-// strip — one entry from kittyRows per line.  The terminal renders each strip
-// at the correct cursor position; cells are otherwise left transparent (reset
-// attributes, no explicit background) so the image shows through.
-//
-// If kittyRows is nil, the existing Unicode block-art renderer is used as a
-// fallback, which works in any colour terminal.
-func coverPanelLines(img image.Image, title, artist, album string, w, h int, kittyRows []string) []string {
+// the album art (as Unicode block art) and track metadata. w is the panel
+// width in terminal columns. The crisp Kitty-graphics cover is drawn separately
+// as an overlay in View; this is the cell-grid path used as the fallback.
+func coverPanelLines(img image.Image, title, artist, album string, w, h int) []string {
 	lines := make([]string, h)
 	if w <= 0 || h <= 0 {
 		return lines
@@ -188,19 +181,7 @@ func coverPanelLines(img image.Image, title, artist, album string, w, h int, kit
 	// exceeds h (which can be as small as 1 after a terminal resize).
 	imgRows := min(max(h-4, 2), h)
 
-	if len(kittyRows) > 0 {
-		// Kitty path: use pre-generated per-row sequences for the art area.
-		// Rows beyond the available sequences fall back to transparent spaces.
-		transparent := "\x1b[0m" + strings.Repeat(" ", w)
-		for i := 0; i < imgRows && i < h; i++ {
-			if i < len(kittyRows) {
-				lines[i] = kittyRows[i]
-			} else {
-				lines[i] = transparent
-			}
-		}
-	} else if img != nil {
-		// Block-art fallback.
+	if img != nil {
 		artLines := strings.Split(strings.TrimRight(renderBlockArt(img, w, imgRows), "\n"), "\n")
 		for i := 0; i < imgRows && i < len(artLines) && i < h; i++ {
 			lines[i] = artLines[i]
