@@ -340,10 +340,10 @@ func TestRowDurationSurvivesNarrow(t *testing.T) {
 	}
 }
 
-// TestNowPlayingCoverComposes renders the Now Playing pane with a cover image
-// and asserts the layout stays a clean rectangle (no Kitty-style bleed): every
-// visible line must be the same display width.
-func TestNowPlayingCoverComposes(t *testing.T) {
+// TestQueueCoverComposes renders the Queue with a cover image and asserts the
+// layout stays a clean rectangle (no Kitty-style bleed): every visible line
+// must be the same display width.
+func TestQueueCoverComposes(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 120, 120))
 	for y := range 120 {
 		for x := range 120 {
@@ -355,10 +355,10 @@ func TestNowPlayingCoverComposes(t *testing.T) {
 		}
 	}
 	m := newSmokeModel()
-	m.width, m.height = 90, 28
-	m.section = SecNowPlaying
-	m.currentTrack = &tidal.Track{Title: "SPIRITED AWAY", Artist: tidal.Artist{Name: "Cosmic Flow"}}
+	m.width, m.height = 120, 28
+	m.section = SecQueue
 	m.coverImage = img
+	m.cursor = 1
 	m.isPlaying = true
 	m.currPos, m.duration = 130, 441
 
