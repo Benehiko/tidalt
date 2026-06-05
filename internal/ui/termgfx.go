@@ -25,6 +25,14 @@ func KittySupported() bool {
 // kittyChunkSize is the maximum base64 payload length per Kitty APC chunk.
 const kittyChunkSize = 4096
 
+// kittyState memoizes the encoded cover image and tracks what is currently
+// drawn on screen, so View only re-encodes/re-transmits on a real change.
+type kittyState struct {
+	encodeKey string // cover UUID + box geometry the cached escape was built for
+	escape    string // cached draw escape for encodeKey
+	drawnKey  string // the encodeKey currently displayed (""=nothing/cleared)
+}
+
 // kittyClearAll returns the Kitty escape that deletes every image placement on
 // screen. Kitty images live outside the terminal's cell grid, so redrawing the
 // text frame does not erase them — this must be emitted on any frame that does
