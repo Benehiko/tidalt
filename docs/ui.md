@@ -33,15 +33,17 @@ is hidden entirely below ~40 columns so the main pane stays usable.
 The sidebar groups every destination:
 
 - **NOW**
-  - **Now Playing** — the current track with its cover art (Kitty graphics where
-    supported, Unicode block-art otherwise) and progress.
-  - **Queue** — the live playback queue (see *The queue* below).
+  - **Queue** — the live playback queue with the cover art of the *hovered* track
+    on the right (Kitty graphics where supported, Unicode block-art otherwise);
+    moving the cursor previews each track's cover. See *The queue* below.
 - **LIBRARY**
   - **Playlists** — a two-column view: the playlist index on the left, the
     selected playlist's tracks on the right. `Enter`/`→` opens a playlist;
     `Enter` in the detail loads it into the queue and starts playing.
   - **Songs / Artists / Albums** — your Tidal favorites, each as its own list.
-  - **Recently Played** — tracks played this session, most recent first.
+    From an artist you can drill into an album to see its tracks.
+  - **Recently Played** — recently played tracks, most recent first, persisted
+    across sessions.
 - **TIDAL**
   - **Daily Mixes** — your Tidal mixes; `Enter` loads a mix into the queue.
   - **Search** — see *Search* below.
@@ -64,6 +66,9 @@ playlist it came from. Press `S` (or use the command palette's
 *Save queue as playlist…*) to commit the current queue as a brand-new playlist;
 *Save queue to existing playlist…* appends it to one you already have. A green
 toast confirms the save.
+
+`x` removes the selected track from the queue and `C` clears it (the current
+track keeps playing in both cases).
 
 ## The action sheet
 
