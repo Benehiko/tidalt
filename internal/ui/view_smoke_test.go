@@ -442,6 +442,34 @@ func TestHistoryEnterLoadsQueue(t *testing.T) {
 	}
 }
 
+// TestArtistAlbumDrill verifies opening an album inside the artist view shows
+// its tracks, and playing one loads the album into the queue.
+func TestArtistAlbumDrill(t *testing.T) {
+	m := newSmokeModel()
+	m.width, m.height = 100, 20
+	m.showArtist = true
+	m.artistName = "Lacey Sturm"
+	m.artistAlbum = &tidal.Album{ID: 5, Title: "Life Screams"}
+	m.artistAlbumTracks = []tidal.Track{{ID: 1, Title: "Mercy"}, {ID: 2, Title: "Rot"}}
+
+	if !strings.Contains(stripANSI(m.renderArtistPane(m.theme, 80, 14)), "Mercy") {
+		t.Errorf("album sub-view should list the album's tracks")
+	}
+
+	m.artistAlbumCursor = 1
+	res, _ := m.updateArtist(tea.KeyMsg{Type: tea.KeyEnter})
+	nm := asModel(t, res)
+	if nm.section != SecQueue {
+		t.Errorf("playing an album track should switch to the queue")
+	}
+	if len(nm.tracks) != 2 || nm.cursor != 1 {
+		t.Errorf("album should load into the queue at the chosen track, got %d tracks cursor %d", len(nm.tracks), nm.cursor)
+	}
+	if nm.showArtist || nm.artistAlbum != nil {
+		t.Errorf("the artist drill-down should close after playing")
+	}
+}
+
 // TestClearQueue empties the queue.
 func TestClearQueue(t *testing.T) {
 	m := newSmokeModel()
