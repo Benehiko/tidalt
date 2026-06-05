@@ -38,7 +38,6 @@ type sidebarEntry struct {
 // TIDAL) with their items, plus a trailing Settings item.
 var sidebarEntries = []sidebarEntry{
 	{group: "NOW"},
-	{section: SecNowPlaying, icon: "♪", label: "Now Playing"},
 	{section: SecQueue, icon: "≣", label: "Queue"},
 	{group: "LIBRARY"},
 	{section: SecPlaylists, icon: "≡", label: "Playlists"},

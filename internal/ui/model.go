@@ -781,17 +781,6 @@ func (m *Model) maybeUpdateCover(t *tidal.Track) tea.Cmd {
 	return fetchCoverCmd(cover)
 }
 
-// coverPaneDims returns the cover panel width and image-row count for the
-// Now-Playing pane at the current terminal size. The cover sits inside the
-// section panel (borders + a few metadata rows reserved at the bottom).
-func (m *Model) coverPaneDims() (panelW, imgRows int) {
-	_, mainW := m.layoutDims()
-	panelW = max(min(mainW-4, 40), 8)
-	innerH := max(m.bodyHeight()-2, 2)
-	imgRows = min(max(innerH-5, 2), innerH)
-	return panelW, imgRows
-}
-
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
@@ -844,7 +833,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		bars := m.ensureBarsTicking()
 		cmds := make([]tea.Cmd, 0, 2+len(bars))
-		cmds = append(cmds, waitForTrackDone(msg.done, msg.gen), m.maybeUpdateCover(m.currentTrack))
+		cmds = append(cmds, waitForTrackDone(msg.done, msg.gen), m.maybeUpdateCover(m.coverTrack()))
 		cmds = append(cmds, bars...)
 		return m, tea.Batch(cmds...)
 
@@ -898,7 +887,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var t tidal.Track
 			if err := json.Unmarshal([]byte(ps.CurrentTrackJSON), &t); err == nil {
 				m.currentTrack = &t
-				coverCmd = m.maybeUpdateCover(m.currentTrack)
+				coverCmd = m.maybeUpdateCover(m.coverTrack())
 			}
 		} else {
 			m.currentTrack = nil
@@ -1321,7 +1310,8 @@ func (m *Model) kittyFrame() string {
 	}
 	ks := m.kitty
 
-	if m.section != SecNowPlaying || !m.useKittyCover() {
+	col, row, panelW, imgRows, ok := m.coverBoxRect()
+	if !ok || !m.useKittyCover() {
 		// Cover should not be shown: clear it once, then stay quiet.
 		if ks.drawnKey != "" {
 			ks.drawnKey = ""
@@ -1329,15 +1319,6 @@ func (m *Model) kittyFrame() string {
 		}
 		return ""
 	}
-
-	sidebarW, _ := m.layoutDims()
-	panelW, imgRows := m.coverPaneDims()
-	mainLeft := 0
-	if sidebarW > 0 {
-		mainLeft = sidebarW + zoneGap
-	}
-	col := mainLeft + 2 // panel left border + 1-indexed
-	row := 2            // panel top border + 1-indexed
 
 	key := fmt.Sprintf("%s@%dx%d+%d,%d", m.coverCacheKey, panelW, imgRows, col, row)
 	if ks.drawnKey == key {
@@ -1349,6 +1330,29 @@ func (m *Model) kittyFrame() string {
 	}
 	ks.drawnKey = key
 	return ks.escape
+}
+
+// coverBoxRect returns the 1-indexed screen position and cell size of the cover
+// image box for the active section, and whether a cover box is shown. The Queue
+// places it on the right of the track list.
+func (m *Model) coverBoxRect() (col, row, panelW, imgRows int, ok bool) {
+	if m.section != SecQueue {
+		return 0, 0, 0, 0, false
+	}
+	sidebarW, mainW := m.layoutDims()
+	coverW, show := m.queueCoverWidth(mainW)
+	if !show {
+		return 0, 0, 0, 0, false
+	}
+	mainLeft := 0
+	if sidebarW > 0 {
+		mainLeft = sidebarW + zoneGap
+	}
+	listW := mainW - coverW
+	pw, ir := m.queueCoverDims(coverW, m.bodyHeight())
+	col = mainLeft + listW + 1 /* cover panel left border */ + 1 /* 1-indexed */
+	row = 1 /* panel top border */ + 1                           /* 1-indexed */
+	return col, row, pw, ir, true
 }
 
 // footerKeyBar returns the context-sensitive key hint bar for the current
@@ -1438,8 +1442,6 @@ func (m *Model) renderMain(t Theme, w, h int) string {
 		return m.renderArtistPane(t, w, h)
 	}
 	switch m.section {
-	case SecNowPlaying:
-		return m.renderNowPlayingPane(t, w, h)
 	case SecMixes:
 		return m.renderMixesPane(t, w, h)
 	case SecSearch:

@@ -3,15 +3,27 @@ package ui
 import (
 	"fmt"
 	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/Benehiko/tidalt/v3/internal/tidal"
 )
 
 // artistViewActive reports whether the transient artist drill-down is showing.
 func (m *Model) artistViewActive() bool { return m.showArtist }
 
 // renderQueuePane renders the track list for the Queue / Favorites-Songs
-// sections inside a titled panel.
+// sections inside a titled panel. The Queue is split into a track list on the
+// left and a cover panel on the right showing the hovered (cursor) track's art.
 func (m *Model) renderQueuePane(t Theme, w, h int) string {
-	innerW := max(w-2, 1)
+	coverW, showCover := m.queueCoverWidth(w)
+	listW := w
+	if showCover {
+		listW = w - coverW
+	}
+
+	innerW := max(listW-2, 1)
 	rows := make([]string, 0, len(m.tracks))
 	for i := range m.tracks {
 		tr := m.tracks[i]
@@ -29,11 +41,90 @@ func (m *Model) renderQueuePane(t Theme, w, h int) string {
 	if len(rows) == 0 {
 		rows = append(rows, t.RowDim.Render("Queue is empty. Search or open a mix to add tracks."))
 	}
-	title := sectionTitle(m.section)
-	if m.section == SecQueue {
-		title = m.queueHeader(t)
+	listPanel := renderListPanel(t, m.queueHeader(t), m.focusMain, rows, m.cursor, listW, h)
+	if !showCover {
+		return listPanel
 	}
-	return renderListPanel(t, title, m.focusMain, rows, m.cursor, w, h)
+	return lipgloss.JoinHorizontal(lipgloss.Top, listPanel, m.renderQueueCover(t, coverW, h))
+}
+
+// queueCoverWidth returns the width of the Queue's right-hand cover panel and
+// whether there is room to show it (hidden on narrow terminals).
+func (m *Model) queueCoverWidth(paneW int) (int, bool) {
+	// Need a usable list plus a square-ish cover; require a comfortably wide pane.
+	if paneW < 70 {
+		return 0, false
+	}
+	w := min(max(paneW/3, 26), 44)
+	return w, true
+}
+
+// renderQueueCover renders the cover panel for the track under the cursor. The
+// crisp Kitty image (when supported) is overlaid in View; this draws the box
+// (block art / placeholder) and the track metadata.
+func (m *Model) renderQueueCover(t Theme, w, h int) string {
+	tr := m.hoveredTrack()
+	if tr == nil {
+		return renderPanel(t, "", false, w, h, t.RowDim.Render("No track selected."))
+	}
+	panelW, imgRows := m.queueCoverDims(w, h)
+
+	var b strings.Builder
+	if m.useKittyCover() {
+		for range imgRows {
+			b.WriteString(strings.Repeat(" ", panelW))
+			b.WriteByte('\n')
+		}
+	} else {
+		cover := coverPanelLines(m.coverImage, "", "", "", panelW, imgRows)
+		for _, ln := range cover {
+			b.WriteString(ln)
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(t.Row.Render(truncateStr(tr.Title, panelW)) + "\n")
+	b.WriteString(t.RowDim.Render(truncateStr(tr.Artist.Name, panelW)) + "\n")
+	b.WriteString(t.RowFaint.Render(truncateStr(tr.Album.Title, panelW)))
+
+	return renderPanel(t, "", false, w, h, b.String())
+}
+
+// queueCoverDims returns the cover image's cell width and row count inside the
+// Queue's cover panel of outer size w×h.
+func (m *Model) queueCoverDims(w, h int) (panelW, imgRows int) {
+	panelW = max(w-2, 1)
+	innerH := max(h-2, 2)
+	imgRows = min(max(innerH-4, 2), innerH)
+	return panelW, imgRows
+}
+
+// hoveredTrack is the track the Queue cover should show: the one under the
+// cursor, falling back to the currently-playing track.
+func (m *Model) hoveredTrack() *tidal.Track {
+	if m.cursor >= 0 && m.cursor < len(m.tracks) {
+		return &m.tracks[m.cursor]
+	}
+	return m.currentTrack
+}
+
+// coverTrack is the track whose cover should currently be displayed: the
+// hovered Queue row, otherwise the playing track.
+func (m *Model) coverTrack() *tidal.Track {
+	if m.section == SecQueue {
+		return m.hoveredTrack()
+	}
+	return m.currentTrack
+}
+
+// syncQueueCover fetches the cover for the track under the Queue cursor when it
+// differs from the one displayed. A no-op off the Queue or when the cover is
+// unchanged (maybeUpdateCover dedupes by UUID).
+func (m *Model) syncQueueCover() tea.Cmd {
+	if m.section != SecQueue {
+		return nil
+	}
+	return m.maybeUpdateCover(m.coverTrack())
 }
 
 // renderMixesPane renders the Daily Mixes list.
@@ -112,44 +203,4 @@ func (m *Model) renderArtistPane(t Theme, w, h int) string {
 // hide a terminal-drawn image.
 func (m *Model) useKittyCover() bool {
 	return m.kittySupported && m.coverImage != nil && m.overlay == OverlayNone
-}
-
-// renderNowPlayingPane renders the dedicated Now-Playing section: a large cover
-// above the track metadata and progress. The cover is either block art (drawn
-// here, in the cell grid) or a reserved blank box that View() overlays with a
-// Kitty image at absolute coordinates.
-func (m *Model) renderNowPlayingPane(t Theme, w, h int) string {
-	if m.currentTrack == nil {
-		return renderPanel(t, "NOW PLAYING", m.focusMain, w, h,
-			t.RowDim.Render("Nothing playing. Pick a track from the Queue."))
-	}
-	tr := m.currentTrack
-	panelW, imgRows := m.coverPaneDims()
-
-	var b strings.Builder
-	if m.useKittyCover() {
-		// Reserve a blank box; View() draws the real image on top of it.
-		for range imgRows {
-			b.WriteString(strings.Repeat(" ", panelW))
-			b.WriteByte('\n')
-		}
-		b.WriteString(t.RowDim.Render(tr.Title) + "\n")
-		b.WriteString(t.RowDim.Render(tr.Artist.Name) + "\n")
-		b.WriteString(t.RowFaint.Render(tr.Album.Title) + "\n")
-	} else {
-		cover := coverPanelLines(m.coverImage, tr.Title, tr.Artist.Name, tr.Album.Title, panelW, imgRows+4)
-		for _, ln := range cover {
-			b.WriteString(ln)
-			b.WriteByte('\n')
-		}
-	}
-	b.WriteString("\n")
-	percent := 0.0
-	if m.duration > 0 {
-		percent = m.currPos / m.duration
-	}
-	b.WriteString(m.progress.ViewAs(percent))
-	b.WriteString(t.RowDim.Render(fmt.Sprintf("  %s / %s", formatTime(m.currPos), formatTime(m.duration))))
-
-	return renderPanel(t, "NOW PLAYING", m.focusMain, w, h, b.String())
 }

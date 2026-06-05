@@ -199,7 +199,7 @@ func (m Model) selectSection(sec Section) (tea.Model, tea.Cmd) {
 		m.searchInput.Blur()
 	}
 	cmd := m.loadSection(sec)
-	return m, cmd
+	return m, tea.Batch(cmd, m.syncQueueCover())
 }
 
 // loadSection returns the command to (re)load a section's data, or nil when the
@@ -309,16 +309,20 @@ func (m Model) updateListKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor > 0 {
 			m.cursor--
 		}
-		return m, nil
+		cmd := m.syncQueueCover()
+		return m, cmd
 	case keyDown, "j":
 		maxIdx := m.currentListLen()
 		if m.cursor < maxIdx-1 {
 			m.cursor++
 		}
-		return m, nil
+		cmd := m.syncQueueCover()
+		return m, cmd
 	case "x":
 		if m.section == SecQueue {
 			m.removeFromQueue(m.cursor)
+			cmd := m.syncQueueCover()
+			return m, cmd
 		}
 		return m, nil
 	case keyEnter:
