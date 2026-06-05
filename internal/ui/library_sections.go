@@ -261,6 +261,65 @@ func (m *Model) renderPlaylistsPane(t Theme, w, h int) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, indexPanel, detailPanel)
 }
 
+// updateFavSongs handles the Favorite Songs section. Enter loads the favorites
+// into the queue and plays from the selected track.
+func (m Model) updateFavSongs(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "h", keyLeft:
+		m.focusMain = false
+		return m, nil
+	case keyUp, "k":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+		return m, nil
+	case keyDown, "j":
+		if m.cursor < len(m.favSongs)-1 {
+			m.cursor++
+		}
+		return m, nil
+	case keyEnter:
+		if m.cursor >= 0 && m.cursor < len(m.favSongs) {
+			i := m.cursor
+			m.tracksOrder = append([]tidal.Track(nil), m.favSongs...)
+			m.shuffleMode = ShuffleOff
+			m.applyShuffle()
+			m.queueSource = ""
+			m.queuePlaylistUUID = ""
+			m.queueDirty = false
+			m.cursor = i
+			_ = m.store.SavePlaylist(m.tracks)
+			track := m.tracks[i]
+			_ = m.store.CacheTrack(track.ID, track)
+			cmd := m.playTrackCmd(track)
+			return m, cmd
+		}
+		return m, nil
+	}
+	return m.commonKeys(k)
+}
+
+// renderFavSongsPane lists the favorite songs.
+func (m *Model) renderFavSongsPane(t Theme, w, h int) string {
+	innerW := max(w-2, 1)
+	rows := make([]string, 0, len(m.favSongs))
+	for i := range m.favSongs {
+		tr := m.favSongs[i]
+		rows = append(rows, renderTrackRow(t, tr, rowOpts{
+			selected:   m.focusMain && i == m.cursor,
+			playing:    m.currentTrack != nil && m.currentTrack.ID == tr.ID && m.isPlaying,
+			fav:        true,
+			showArtist: true,
+			width:      innerW,
+			duration:   tr.Duration,
+		}))
+	}
+	if len(rows) == 0 {
+		rows = append(rows, t.RowDim.Render("No favorite songs."))
+	}
+	return renderListPanel(t, "SONGS", m.focusMain, rows, m.cursor, w, h)
+}
+
 // renderFavArtistsPane lists favorited artists.
 func (m *Model) renderFavArtistsPane(t Theme, w, h int) string {
 	innerW := max(w-2, 1)

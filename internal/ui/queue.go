@@ -27,6 +27,32 @@ func (m *Model) enqueueNext(t tidal.Track) {
 	_ = m.store.SavePlaylist(m.tracks)
 }
 
+// removeFromQueue drops the track at index i from the live queue, marks the
+// queue edited, and keeps the cursor in range. The currently-playing audio is
+// unaffected (it is already buffered); only the queue list changes.
+func (m *Model) removeFromQueue(i int) {
+	if i < 0 || i >= len(m.tracks) {
+		return
+	}
+	removed := m.tracks[i]
+	m.tracks = append(m.tracks[:i], m.tracks[i+1:]...)
+
+	// Mirror the removal in the unshuffled order so a later re-shuffle is
+	// consistent (remove the first matching ID).
+	for j := range m.tracksOrder {
+		if m.tracksOrder[j].ID == removed.ID {
+			m.tracksOrder = append(m.tracksOrder[:j], m.tracksOrder[j+1:]...)
+			break
+		}
+	}
+
+	if m.cursor >= len(m.tracks) {
+		m.cursor = max(len(m.tracks)-1, 0)
+	}
+	m.queueDirty = true
+	_ = m.store.SavePlaylist(m.tracks)
+}
+
 // loadQueueFromPlaylist replaces the live queue with a playlist's tracks and
 // records its origin so the hybrid header can show the synced/edited state.
 func (m *Model) loadQueueFromPlaylist(tracks []tidal.Track, pl tidal.Playlist) {

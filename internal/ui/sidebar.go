@@ -73,11 +73,13 @@ func (m *Model) sectionCount(sec Section) int {
 	case SecPlaylists:
 		return len(m.playlists)
 	case SecFavSongs:
-		return len(m.favorites)
+		return len(m.favSongs)
 	case SecFavArtists:
 		return len(m.favArtists)
 	case SecFavAlbums:
 		return len(m.favAlbums)
+	case SecHistory:
+		return len(m.history)
 	default:
 		return -1
 	}

@@ -279,6 +279,8 @@ func (m Model) updateSection(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.section {
 	case SecSearch:
 		return m.updateSearchKeys(k)
+	case SecFavSongs:
+		return m.updateFavSongs(k)
 	case SecPlaylists:
 		return m.updatePlaylists(k)
 	case SecFavArtists:
@@ -290,7 +292,7 @@ func (m Model) updateSection(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case SecSettings:
 		return m.updateSettings(k)
 	default:
-		// Queue, Favorites songs, Now Playing, Mixes.
+		// Queue, Now Playing, Mixes.
 		if k.String() == "h" || (k.String() == keyLeft && m.currentTrack == nil) {
 			m.focusMain = false
 			return m, nil
@@ -312,6 +314,11 @@ func (m Model) updateListKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		maxIdx := m.currentListLen()
 		if m.cursor < maxIdx-1 {
 			m.cursor++
+		}
+		return m, nil
+	case "x":
+		if m.section == SecQueue {
+			m.removeFromQueue(m.cursor)
 		}
 		return m, nil
 	case keyEnter:
@@ -615,6 +622,9 @@ func (m *Model) selectedTrack() *tidal.Track {
 	switch {
 	case m.section == SecSearch:
 		return m.selectedTrackForSearch()
+	case m.section == SecFavSongs && len(m.favSongs) > 0 && m.cursor < len(m.favSongs):
+		t := m.favSongs[m.cursor]
+		return &t
 	case m.section == SecHistory && len(m.history) > 0 && m.cursor < len(m.history):
 		t := m.history[m.cursor]
 		return &t

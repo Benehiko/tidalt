@@ -102,6 +102,7 @@ const (
 	actPlayNow actionID = iota
 	actPlayNext
 	actAddQueue
+	actRemoveQueue
 	actAddPlaylist
 	actRadio
 	actGoArtist
@@ -123,17 +124,24 @@ func (m *Model) actionSheetItems() []sheetAction {
 		artist = m.sheetTrack.Artist.Name
 		album = m.sheetTrack.Album.Title
 	}
-	return []sheetAction{
+	items := []sheetAction{
 		{icon: "▸", label: "Play now", id: actPlayNow},
 		{icon: "⏭", label: "Play next", hint: "n", id: actPlayNext},
 		{icon: "＋", label: "Add to queue", hint: "e", id: actAddQueue},
-		{icon: "≡", label: "Add to playlist…", hint: "▸", id: actAddPlaylist},
-		{icon: "∿", label: "Start radio from this", hint: "r", id: actRadio},
-		{icon: "♫", label: "Artist · " + artist, hint: "a", group: "GO TO", id: actGoArtist},
-		{icon: "⊞", label: "Album · " + album, hint: "A", id: actGoAlbum},
-		{icon: "♥", label: favLabel, hint: "f", group: "MORE", id: actFavorite},
-		{icon: "⎘", label: "Copy Tidal link", hint: "c", id: actCopyLink},
 	}
+	// "Remove from queue" only makes sense while browsing the Queue.
+	if m.section == SecQueue {
+		items = append(items, sheetAction{icon: "✕", label: "Remove from queue", hint: "x", id: actRemoveQueue})
+	}
+	items = append(items,
+		sheetAction{icon: "≡", label: "Add to playlist…", hint: "▸", id: actAddPlaylist},
+		sheetAction{icon: "∿", label: "Start radio from this", hint: "r", id: actRadio},
+		sheetAction{icon: "♫", label: "Artist · " + artist, hint: "a", group: "GO TO", id: actGoArtist},
+		sheetAction{icon: "⊞", label: "Album · " + album, hint: "A", id: actGoAlbum},
+		sheetAction{icon: "♥", label: favLabel, hint: "f", group: "MORE", id: actFavorite},
+		sheetAction{icon: "⎘", label: "Copy Tidal link", hint: "c", id: actCopyLink},
+	)
+	return items
 }
 
 // updateActionSheet handles navigation and selection within the action sheet.
@@ -169,6 +177,8 @@ func (m Model) updateActionSheet(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.runSheetAction(actFavorite)
 	case "c":
 		return m.runSheetAction(actCopyLink)
+	case "x":
+		return m.runSheetAction(actRemoveQueue)
 	}
 	return m, nil
 }
@@ -193,6 +203,11 @@ func (m Model) runSheetAction(id actionID) (tea.Model, tea.Cmd) {
 		return m, nil
 	case actAddQueue:
 		m.enqueueEnd(track)
+		return m, nil
+	case actRemoveQueue:
+		if m.section == SecQueue {
+			m.removeFromQueue(m.cursor)
+		}
 		return m, nil
 	case actAddPlaylist:
 		// Wired in the playlist step; no-op placeholder for now.

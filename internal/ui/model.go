@@ -109,6 +109,7 @@ type Model struct {
 	showArtist    bool // true while the transient artist drill-down is open
 
 	// Library data loaded on demand for the favorites/playlists sections.
+	favSongs   []tidal.Track // the favorite-songs list (SecFavSongs)
 	playlists  []tidal.Playlist
 	favArtists []tidal.Artist
 	favAlbums  []tidal.Album
@@ -985,7 +986,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case favoritesLoadedMsg:
 		tracks := []tidal.Track(msg)
-		// Always update the favorites map so ♥ indicators work.
+		// Keep the favorite-songs list (for the Songs section) and the lookup
+		// map (for the ♥ indicators) in sync.
+		m.favSongs = tracks
 		for i := range tracks {
 			m.favorites[tracks[i].ID] = true
 		}
@@ -1297,6 +1300,16 @@ func (m *Model) footerKeyBar(t Theme, w int) string {
 		{"q", "Quit"},
 	}
 	switch m.section {
+	case SecQueue:
+		base = [][2]string{
+			{"j/k", "Move"},
+			{"↵", "Play"},
+			{"x", "Remove"},
+			{"S", "Save"},
+			{"o", "Actions"},
+			{":", "Command"},
+			{"q", "Quit"},
+		}
 	case SecSearch:
 		base = [][2]string{
 			{"↵", "Search/Play"},
@@ -1366,8 +1379,10 @@ func (m *Model) renderMain(t Theme, w, h int) string {
 		return m.renderMixesPane(t, w, h)
 	case SecSearch:
 		return m.renderSearchPane(t, w, h)
-	case SecQueue, SecFavSongs:
+	case SecQueue:
 		return m.renderQueuePane(t, w, h)
+	case SecFavSongs:
+		return m.renderFavSongsPane(t, w, h)
 	case SecPlaylists:
 		return m.renderPlaylistsPane(t, w, h)
 	case SecFavArtists:
