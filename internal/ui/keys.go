@@ -325,6 +325,13 @@ func (m Model) updateListKeys(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+	case "C":
+		if m.section == SecQueue {
+			m.clearQueue()
+			cmd := m.syncQueueCover()
+			return m, cmd
+		}
+		return m, nil
 	case keyEnter:
 		if m.section == SecMixes && len(m.mixes) > 0 {
 			mix := m.mixes[m.cursor]

@@ -48,6 +48,11 @@ func allPaletteItems() []paletteItem {
 			m.overlay = OverlayNone
 			return m.beginSaveToExisting()
 		}},
+		{icon: "✕", label: "Clear queue", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
+			m.overlay = OverlayNone
+			m.clearQueue()
+			return m, nil
+		}},
 	}
 	for _, e := range sidebarEntries {
 		if e.group != "" {

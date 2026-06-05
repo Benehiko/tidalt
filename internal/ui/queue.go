@@ -27,6 +27,39 @@ func (m *Model) enqueueNext(t tidal.Track) {
 	_ = m.store.SavePlaylist(m.tracks)
 }
 
+// playListIntoQueue loads a list of tracks into the live queue (as an ad-hoc,
+// unsaved queue) and plays from index i. Used by sections that play through a
+// list — Favorite Songs, Recently Played, etc.
+func (m *Model) playListIntoQueue(list []tidal.Track, i int) tea.Cmd {
+	if i < 0 || i >= len(list) {
+		return nil
+	}
+	m.tracksOrder = append([]tidal.Track(nil), list...)
+	m.shuffleMode = ShuffleOff
+	m.applyShuffle()
+	m.queueSource = ""
+	m.queuePlaylistUUID = ""
+	m.queueDirty = false
+	m.cursor = i
+	_ = m.store.SavePlaylist(m.tracks)
+	track := m.tracks[i]
+	_ = m.store.CacheTrack(track.ID, track)
+	return m.playTrackCmd(track)
+}
+
+// clearQueue empties the live queue. Playback of the current track continues
+// (already buffered) but auto-advance has nothing to follow.
+func (m *Model) clearQueue() {
+	m.tracks = nil
+	m.tracksOrder = nil
+	m.shufflePlayed = nil
+	m.cursor = 0
+	m.queueSource = ""
+	m.queuePlaylistUUID = ""
+	m.queueDirty = false
+	_ = m.store.SavePlaylist(m.tracks)
+}
+
 // removeFromQueue drops the track at index i from the live queue, marks the
 // queue edited, and keeps the cursor in range. The currently-playing audio is
 // unaffected (it is already buffered); only the queue list changes.

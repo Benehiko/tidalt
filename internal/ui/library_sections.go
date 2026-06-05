@@ -194,13 +194,8 @@ func (m Model) updateHistory(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case keyEnter:
-		if m.cursor >= 0 && m.cursor < len(m.history) {
-			track := m.history[m.cursor]
-			_ = m.store.CacheTrack(track.ID, track)
-			cmd := m.playTrackCmd(track)
-			return m, cmd
-		}
-		return m, nil
+		cmd := m.playListIntoQueue(m.history, m.cursor)
+		return m, cmd
 	}
 	return m.commonKeys(k)
 }
@@ -279,22 +274,8 @@ func (m Model) updateFavSongs(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case keyEnter:
-		if m.cursor >= 0 && m.cursor < len(m.favSongs) {
-			i := m.cursor
-			m.tracksOrder = append([]tidal.Track(nil), m.favSongs...)
-			m.shuffleMode = ShuffleOff
-			m.applyShuffle()
-			m.queueSource = ""
-			m.queuePlaylistUUID = ""
-			m.queueDirty = false
-			m.cursor = i
-			_ = m.store.SavePlaylist(m.tracks)
-			track := m.tracks[i]
-			_ = m.store.CacheTrack(track.ID, track)
-			cmd := m.playTrackCmd(track)
-			return m, cmd
-		}
-		return m, nil
+		cmd := m.playListIntoQueue(m.favSongs, m.cursor)
+		return m, cmd
 	}
 	return m.commonKeys(k)
 }
