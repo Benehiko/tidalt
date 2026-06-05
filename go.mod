@@ -1,4 +1,4 @@
-module github.com/Benehiko/tidalt/v3
+module github.com/Benehiko/tidalt/v4
 
 go 1.26.4
 

@@ -8,7 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Benehiko/tidalt/v3/internal/tidal"
+	"github.com/Benehiko/tidalt/v4/internal/tidal"
 )
 
 // recordHistory prepends a track to the Recently Played list (de-duplicated,

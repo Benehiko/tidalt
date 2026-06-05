@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Benehiko/tidalt/v3/internal/tidal"
+	"github.com/Benehiko/tidalt/v4/internal/tidal"
 )
 
 // logoLines is a 5-row ASCII art representation of "tidalt".

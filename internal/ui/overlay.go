@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Benehiko/tidalt/v3/internal/tidal"
+	"github.com/Benehiko/tidalt/v4/internal/tidal"
 )
 
 // openActionSheet raises the contextual action sheet for a track.
