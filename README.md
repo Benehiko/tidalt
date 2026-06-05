@@ -96,7 +96,7 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 
 ## Features
 
-- **Sidebar navigation** — a persistent left nav groups every section: Now Playing, Queue, Playlists, Favorite Songs / Artists / Albums, Recently Played, Daily Mixes, Search, and Themes
+- **Sidebar navigation** — a persistent left nav groups every section: Queue (with the hovered track's cover art), Playlists, Favorite Songs / Artists / Albums, Recently Played, Daily Mixes, Search, and Themes
 - **Contextual action sheet** (`o`) — from any track, open a popup of actions: play now, play next, add to queue, add to playlist, start radio, go to artist/album, favorite, copy link
 - **Command palette** (`:` or `Ctrl+P`) — fuzzy-run any action or jump to any section
 - **Hybrid queue / playlist model** — the queue is your live workspace; opening a saved playlist loads it and tracks its origin. The header shows `synced`, `edited — S save`, or `radio · unsaved — S save`, and `S` saves the queue as a new playlist. Edits never silently change a saved playlist
@@ -141,6 +141,8 @@ The interface has two focus zones: the **sidebar** (section navigation) and the
 | `a`                | Open the artist view for the selected track                   |
 | `f`                | Toggle favorite on the selected track                         |
 | `S`                | Save the current queue as a new playlist                      |
+| `x`                | Remove the selected track from the queue                      |
+| `C`                | Clear the queue                                               |
 | `t`                | Cycle the color theme                                         |
 | `9` / `0`          | Volume down / up 5%                                           |
 | `c`                | Copy the current track link to the clipboard                  |
