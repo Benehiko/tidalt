@@ -106,8 +106,18 @@ func (m *Model) renderArtistPane(t Theme, w, h int) string {
 	return renderListPanel(t, title, true, rows, m.artistCursor, w, h)
 }
 
+// useKittyCover reports whether the Now-Playing cover should be drawn with the
+// Kitty graphics protocol (overlaid in View) instead of block art. Kitty is
+// only safe when no overlay is covering the pane, since the popup would not
+// hide a terminal-drawn image.
+func (m *Model) useKittyCover() bool {
+	return m.kittySupported && m.coverImage != nil && m.overlay == OverlayNone
+}
+
 // renderNowPlayingPane renders the dedicated Now-Playing section: a large cover
-// (Kitty or block art) above the track metadata and progress.
+// above the track metadata and progress. The cover is either block art (drawn
+// here, in the cell grid) or a reserved blank box that View() overlays with a
+// Kitty image at absolute coordinates.
 func (m *Model) renderNowPlayingPane(t Theme, w, h int) string {
 	if m.currentTrack == nil {
 		return renderPanel(t, "NOW PLAYING", m.focusMain, w, h,
@@ -115,16 +125,23 @@ func (m *Model) renderNowPlayingPane(t Theme, w, h int) string {
 	}
 	tr := m.currentTrack
 	panelW, imgRows := m.coverPaneDims()
-	// Always use the Unicode block-art renderer here: Kitty graphics escapes
-	// are cursor-positioned and do not compose inside a bordered pane that is
-	// JoinHorizontal-ed with the sidebar (they bleed across the layout). Block
-	// art is a normal cell-grid string that lays out correctly.
-	cover := coverPanelLines(m.coverImage, tr.Title, tr.Artist.Name, tr.Album.Title, panelW, imgRows+4, nil)
 
 	var b strings.Builder
-	for _, ln := range cover {
-		b.WriteString(ln)
-		b.WriteByte('\n')
+	if m.useKittyCover() {
+		// Reserve a blank box; View() draws the real image on top of it.
+		for range imgRows {
+			b.WriteString(strings.Repeat(" ", panelW))
+			b.WriteByte('\n')
+		}
+		b.WriteString(t.RowDim.Render(tr.Title) + "\n")
+		b.WriteString(t.RowDim.Render(tr.Artist.Name) + "\n")
+		b.WriteString(t.RowFaint.Render(tr.Album.Title) + "\n")
+	} else {
+		cover := coverPanelLines(m.coverImage, tr.Title, tr.Artist.Name, tr.Album.Title, panelW, imgRows+4)
+		for _, ln := range cover {
+			b.WriteString(ln)
+			b.WriteByte('\n')
+		}
 	}
 	b.WriteString("\n")
 	percent := 0.0
