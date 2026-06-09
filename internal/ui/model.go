@@ -18,6 +18,7 @@ import (
 	"github.com/Benehiko/tidalt/v4/internal/logger"
 	"github.com/Benehiko/tidalt/v4/internal/mpris"
 	"github.com/Benehiko/tidalt/v4/internal/player"
+	"github.com/Benehiko/tidalt/v4/internal/spotify"
 	"github.com/Benehiko/tidalt/v4/internal/store"
 	"github.com/Benehiko/tidalt/v4/internal/tidal"
 )
@@ -52,6 +53,7 @@ const (
 	OverlayActionSheet
 	OverlayDeviceSelect
 	OverlayAddToPlaylist
+	OverlayImportSpotify
 )
 
 //nolint:recvcheck // tea.Model requires value-receiver Init/Update/View; helper methods mutate via pointer receiver
@@ -78,6 +80,15 @@ type Model struct {
 	// Command palette overlay state.
 	paletteInput  textinput.Model
 	paletteCursor int
+
+	// Spotify-import overlay state: the URL input, the resolved source, the
+	// matched/"not available" rows, the flow stage, and the list cursor.
+	importInput  textinput.Model
+	importSource *spotify.Source
+	importRows   []importRow
+	importStage  importStage
+	importCursor int
+	importError  string
 
 	// Theme picker (Settings section) cursor; previewPalette (below) holds the
 	// live-previewed scheme while the cursor moves.
@@ -568,6 +579,18 @@ func resolveQuery(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 	}
 	if strings.Contains(query, "tidal.com/") && strings.Contains(query, "/mix/") {
 		return client.GetMixTracks(ctx, tidalURLID(query))
+	}
+
+	// Spotify URL: resolve the source and match each track on Tidal, returning
+	// the matched Tidal tracks. Unmatched tracks are dropped on this quick path
+	// (the import overlay shows them as "not available").
+	if spotify.IsSpotifyURL(query) {
+		src, err := spotify.Resolve(ctx, spotifyHTTPClient(), query)
+		if err != nil {
+			return nil, err
+		}
+		rows := matchSpotifyTracks(ctx, client, src.Tracks)
+		return matchedTracks(rows), nil
 	}
 
 	// Plain-text search — check cache first.
@@ -1154,6 +1177,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.toast = fmt.Sprintf("✓ Saved %q — %d tracks", msg.name, msg.count)
 		return m, toastClearCmd()
 
+	case spotifyResolvedMsg:
+		if m.overlay != OverlayImportSpotify {
+			return m, nil // overlay was dismissed while resolving
+		}
+		if msg.err != nil {
+			m.importStage = importStageInput
+			m.importInput.Focus()
+			m.importError = msg.err.Error()
+			return m, nil
+		}
+		m.importSource = msg.src
+		m.importRows = msg.rows
+		m.importCursor = 0
+		m.importError = ""
+		m.importStage = importStageReview
+		return m, nil
+
 	case clearToastMsg:
 		m.toast = ""
 
@@ -1425,6 +1465,8 @@ func (m *Model) renderOverlay(t Theme, base string) string {
 		popup = m.renderCommandPalette(t)
 	case OverlayAddToPlaylist:
 		popup = m.renderAddToPlaylist(t)
+	case OverlayImportSpotify:
+		popup = m.renderImportSpotify(t)
 	case OverlayActionSheet:
 		popup = m.renderActionSheet(t)
 		anchorCentered = false

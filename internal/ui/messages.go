@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Benehiko/tidalt/v4/internal/mpris"
+	"github.com/Benehiko/tidalt/v4/internal/spotify"
 	"github.com/Benehiko/tidalt/v4/internal/tidal"
 )
 
@@ -52,6 +53,14 @@ type (
 		count int
 	}
 	clearToastMsg struct{}
+	// spotifyResolvedMsg carries the result of resolving + Tidal-matching a
+	// pasted Spotify URL. On success src is set and rows holds one entry per
+	// source track (match nil ⇒ "not available"); on failure err is set.
+	spotifyResolvedMsg struct {
+		src  *spotify.Source
+		rows []importRow
+		err  error
+	}
 	tickMsg       time.Time
 	barTickMsg    time.Time
 	nowPlayingMsg struct {
