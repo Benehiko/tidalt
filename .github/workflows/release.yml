@@ -22,9 +22,9 @@ jobs:
             goarch: arm64
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -41,7 +41,7 @@ jobs:
       - name: Build
         run: go build -tags staticav -ldflags="-s -w" -o tidalt-linux-${{ matrix.goarch }} ./cmd/tidalt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: tidalt-linux-${{ matrix.goarch }}
           path: tidalt-linux-${{ matrix.goarch }}
@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up QEMU (for arm64 cross-build)
         uses: docker/setup-qemu-action@v3
@@ -80,7 +80,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up QEMU (for arm64 cross-build)
         uses: docker/setup-qemu-action@v3
@@ -105,7 +105,7 @@ jobs:
       - name: Flatten platform subdirectories
         run: find dist -mindepth 2 -type f -exec mv {} dist/ \; && find dist -type d -empty -delete
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: distro-packages
           path: dist/
@@ -117,7 +117,7 @@ jobs:
     needs: [binary, packages, docker]
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           merge-multiple: true
           path: dist/
