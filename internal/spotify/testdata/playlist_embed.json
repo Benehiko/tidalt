@@ -1,0 +1,32 @@
+{
+  "props": {
+    "pageProps": {
+      "state": {
+        "data": {
+          "entity": {
+            "type": "playlist",
+            "name": "Today’s Top Hits",
+            "title": "Today’s Top Hits",
+            "trackList": [
+              {
+                "uri": "spotify:track:20jbSiX29FDX4oQxBXyUEi",
+                "title": "hate that i made you love me",
+                "subtitle": "Ariana Grande"
+              },
+              {
+                "uri": "spotify:track:5uPaqMMt59KGrdKIitDRqa",
+                "title": "I Knew It, I Knew You",
+                "subtitle": "Taylor Swift"
+              },
+              {
+                "uri": "spotify:track:5yvVYFDUpbnjcnRBgjwTzM",
+                "title": "Dracula - JENNIE Remix",
+                "subtitle": "Tame Impala, JENNIE"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

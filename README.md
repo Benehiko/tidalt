@@ -102,6 +102,7 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 - **Hybrid queue / playlist model** — the queue is your live workspace; opening a saved playlist loads it and tracks its origin. The header shows `synced`, `edited — S save`, or `radio · unsaved — S save`, and `S` saves the queue as a new playlist. Edits never silently change a saved playlist
 - **First-class favorites** — browse favorite songs, artists, and albums as their own sections
 - **Grouped search** — results are split into Songs / Artists / Albums; drill into an artist or album from any hit
+- **Import from Spotify** — paste a Spotify track or playlist URL (command palette → "Import from Spotify…") and tidalt finds each song on Tidal, flagging anything it can't match as _not available_; then create a Tidal playlist or load the matches into the queue. No Spotify login required. See [docs/spotify-import.md](docs/spotify-import.md)
 - **In-app theme picker** — eight built-in color schemes (TIDALT, Catppuccin, Tokyo Night, Gruvbox, Nord, Rosé Pine, Dracula, Amber CRT) plus an "Auto — match terminal" option, with live preview as you move the cursor; the choice is persisted
 - Artist view — browse an artist's full discography and play everything, their top tracks, or a single album
 - Song radio — build a queue of similar tracks for any song
@@ -212,6 +213,7 @@ Auto-detection scans `/proc/asound/cards`. Any ALSA-visible device can be select
 - [Architecture & audio pipeline](docs/architecture.md)
 - [Client-server architecture & daemon mode](docs/client-server.md)
 - [MPRIS2 support](docs/mpris2.md)
+- [Importing from Spotify](docs/spotify-import.md)
 - [DAC compatibility](docs/dac-compatibility.md)
 - [Media keys & MPRIS2 setup](docs/media-keys.md)
 - [Browser URL handler troubleshooting](docs/browser-url-handler.md)

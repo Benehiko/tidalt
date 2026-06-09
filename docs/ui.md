@@ -89,8 +89,17 @@ directly on the list without opening the sheet.
 Press `:` or `Ctrl+P` to open a fuzzy command palette. Type to filter, `j`/`k`
 (or `Ctrl+J`/`Ctrl+K`) to move, `Enter` to run. It groups into:
 
-- **ACTIONS** — *Save queue as playlist…*, *Save queue to existing playlist…*
+- **ACTIONS** — *Save queue as playlist…*, *Save queue to existing playlist…*,
+  *Clear queue*, *Import from Spotify…*
 - **JUMP TO** — every sidebar section
+
+## Importing from Spotify
+
+*Import from Spotify…* (in the command palette) opens an overlay where you paste a
+Spotify track or playlist URL. tidalt finds each song on Tidal, shows a review list
+marking unmatched tracks as **not available**, and lets you either create a Tidal
+playlist or load the matches into the queue. No Spotify login is needed. See
+[spotify-import.md](spotify-import.md) for details and limitations.
 
 ## Search
 
@@ -98,7 +107,8 @@ Search queries Tidal across categories and groups the results into **SONGS**,
 **ARTISTS**, and **ALBUMS**. The cursor moves across all groups; `Enter` does the
 natural thing for the highlighted row — play a song, drill into an artist's
 discography, or load an album into the queue. Track rows also accept the action
-sheet and the `f`/`r` shortcuts.
+sheet and the `f`/`r` shortcuts. You can also paste a Spotify URL into the search
+box to load the matched Tidal tracks straight into the queue.
 
 ## Themes
 

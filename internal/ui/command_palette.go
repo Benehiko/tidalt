@@ -53,6 +53,10 @@ func allPaletteItems() []paletteItem {
 			m.clearQueue()
 			return m, nil
 		}},
+		{icon: "♫", label: "Import from Spotify…", hint: "paste a URL", group: "ACTIONS", run: func(m Model) (tea.Model, tea.Cmd) {
+			m.openImportSpotify()
+			return m, nil
+		}},
 	}
 	for _, e := range sidebarEntries {
 		if e.group != "" {
