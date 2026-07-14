@@ -487,7 +487,51 @@ type alsaHandle struct {
 // whole budget on a failure that cannot resolve itself. The retry loop
 // observes ctx so a cancelled playback loop exits immediately instead of
 // finishing the retry window.
+//
+// If format negotiation itself is refused on a hw: device, the open is retried
+// once through ALSA's plug layer. Some USB interfaces (e.g. Focusrite's
+// Vocaster line) expose a fixed native channel-count/rate/format and reject
+// anything else; plughw: resamples and remixes to that shape. Only the
+// negotiation step is eligible for this fallback — a device that is merely
+// busy is retried above as hw: and never downgraded.
 func openALSA(ctx context.Context, device string, channels uint8, rate uint32, bits uint8) (*alsaHandle, error) {
+	handle, result, err := openALSARaw(ctx, device, channels, rate, bits)
+	if err != nil && errors.Is(err, errFormatRefused) && strings.HasPrefix(device, "hw:") {
+		plugDevice := "plughw:" + strings.TrimPrefix(device, "hw:")
+		logger.L.Warn("openALSA: hw: refused the requested format, retrying via plughw: (output will no longer be bit-perfect)",
+			"device", device, "plugDevice", plugDevice, "err", err)
+		handle, result, err = openALSARaw(ctx, plugDevice, channels, rate, bits)
+		if err == nil {
+			device = plugDevice
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &alsaHandle{
+		pcm:             handle,
+		format:          result.format,
+		bytesPerSample:  int(result.bytes_per_sample),
+		significantBits: int(result.significant_bits),
+		rate:            uint32(result.rate),
+		periodSize:      uint64(result.period_size),
+		bufferSize:      uint64(result.buffer_size),
+		availMin:        uint64(result.avail_min),
+		startThreshold:  uint64(result.start_threshold),
+		stopThreshold:   uint64(result.stop_threshold),
+	}, nil
+}
+
+// errFormatRefused marks a failure of the format-negotiation step, i.e. the
+// device answered the open but rejected the requested channel count, rate, or
+// sample format. It is the only condition that justifies falling back to
+// plughw:; a busy device is retried as hw: instead.
+var errFormatRefused = errors.New("device refused the requested PCM format")
+
+// openALSARaw opens and configures a single device, without any plughw:
+// fallback. The EBUSY retry covers only snd_pcm_open — see openALSA.
+func openALSARaw(ctx context.Context, device string, channels uint8, rate uint32, bits uint8) (*C.snd_pcm_t, C.alsa_open_result_t, error) {
 	cdev := C.CString(device)
 	defer C.free(unsafe.Pointer(cdev))
 
@@ -505,10 +549,10 @@ func openALSA(ctx context.Context, device string, channels uint8, rate uint32, b
 			case <-time.After(openBusyRetryInterval):
 				continue
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, result, ctx.Err()
 			}
 		}
-		return nil, fmt.Errorf("snd_pcm_open(%s): %s", device, C.GoString(C.snd_strerror(rc)))
+		return nil, result, fmt.Errorf("snd_pcm_open(%s): %s", device, C.GoString(C.snd_strerror(rc)))
 	}
 
 	// configure_hw_pcm closes the handle itself on failure.
@@ -516,22 +560,11 @@ func openALSA(ctx context.Context, device string, channels uint8, rate uint32, b
 		C.uint(channels), C.uint(rate), C.int(bits),
 		&handle, &result,
 	); rc < 0 {
-		return nil, fmt.Errorf("configure_hw_pcm(%s, ch=%d, rate=%d, bits=%d): %s",
-			device, channels, rate, bits, C.GoString(C.snd_strerror(rc)))
+		return nil, result, fmt.Errorf("configure_hw_pcm(%s, ch=%d, rate=%d, bits=%d): %s: %w",
+			device, channels, rate, bits, C.GoString(C.snd_strerror(rc)), errFormatRefused)
 	}
 
-	return &alsaHandle{
-		pcm:             handle,
-		format:          result.format,
-		bytesPerSample:  int(result.bytes_per_sample),
-		significantBits: int(result.significant_bits),
-		rate:            uint32(result.rate),
-		periodSize:      uint64(result.period_size),
-		bufferSize:      uint64(result.buffer_size),
-		availMin:        uint64(result.avail_min),
-		startThreshold:  uint64(result.start_threshold),
-		stopThreshold:   uint64(result.stop_threshold),
-	}, nil
+	return handle, result, nil
 }
 
 // Play starts playback of the given URL and returns the done channel for this
