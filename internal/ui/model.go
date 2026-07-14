@@ -520,7 +520,7 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 			logger.L.Error("GetStreamURL failed", "trackID", track.ID, "err", err)
 			return skipErrMsg{err: err, gen: gen}
 		}
-		logger.L.Info("stream resolved", "trackID", track.ID, "ext", info.Ext)
+		logger.L.Info("stream resolved", "trackID", track.ID, "ext", info.Ext, "quality", info.Quality)
 		done, err := playFn(info.URL)
 		if err != nil {
 			logger.L.Error("playFn failed", "trackID", track.ID, "err", err)

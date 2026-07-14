@@ -238,8 +238,9 @@ func (t *Track) normalizeArtist() {
 
 // StreamInfo carries the resolved stream URL and its detected format extension.
 type StreamInfo struct {
-	URL string
-	Ext string // e.g. "flac", "mp4", "m4a"
+	URL     string
+	Ext     string // e.g. "flac", "mp4", "m4a"
+	Quality string // the tier that was actually granted, e.g. "HI_RES_LOSSLESS"
 }
 
 func (c *Client) GetStreamURL(ctx context.Context, trackID int) (StreamInfo, error) {
@@ -298,7 +299,7 @@ func (c *Client) streamURLForQuality(ctx context.Context, trackID int, q string)
 	if i := strings.LastIndex(base, "."); i >= 0 {
 		ext = strings.ToLower(base[i+1:])
 	}
-	return StreamInfo{URL: streamURL, Ext: ext}, nil
+	return StreamInfo{URL: streamURL, Ext: ext, Quality: q}, nil
 }
 
 func (c *Client) GetFavorites(ctx context.Context, limit int) ([]Track, error) {

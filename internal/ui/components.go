@@ -286,7 +286,7 @@ func (m *Model) nowBarStatus(t Theme) string {
 	if dev == "" {
 		dev = "auto"
 	}
-	parts = append(parts, dev)
+	parts = append(parts, "device: "+dev)
 	return t.RowDim.Render(strings.Join(parts, "  ·  "))
 }
 
