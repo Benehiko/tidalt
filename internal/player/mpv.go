@@ -464,6 +464,7 @@ func reserveALSADevice(ctx context.Context, cardNum int) (release func(), err er
 
 type alsaHandle struct {
 	pcm             *C.snd_pcm_t
+	device          string // ALSA device string actually opened (may differ from the requested one on plughw: fallback)
 	format          C.snd_pcm_format_t
 	bytesPerSample  int
 	significantBits int // actual DAC bit depth
@@ -511,6 +512,7 @@ func openALSA(ctx context.Context, device string, channels uint8, rate uint32, b
 
 	return &alsaHandle{
 		pcm:             handle,
+		device:          device,
 		format:          result.format,
 		bytesPerSample:  int(result.bytes_per_sample),
 		significantBits: int(result.significant_bits),
@@ -818,7 +820,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		return false
 	}
 	logger.L.Debug("ALSA opened",
-		"device", device,
+		"device", ah.device,
 		"format", ah.format,
 		"bps", ah.bytesPerSample,
 		"significantBits", ah.significantBits,
