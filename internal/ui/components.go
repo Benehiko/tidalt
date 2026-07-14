@@ -261,7 +261,15 @@ func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 	left := eq + " " + title
 	pad := max(inner-lipgloss.Width(left)-lipgloss.Width(status), 0)
 	head := left + strings.Repeat(" ", pad) + status
-	artist := t.RowDim.Render(truncateStr(m.currentTrack.Artist.Name, inner))
+
+	badge := ""
+	if q := qualityBadge(m.currentQuality); q != "" {
+		badge = t.RowFaint.Render(q)
+	}
+	artistRoom := max(inner-lipgloss.Width(badge)-1, 1)
+	artist := t.RowDim.Render(truncateStr(m.currentTrack.Artist.Name, artistRoom))
+	artistPad := max(inner-lipgloss.Width(artist)-lipgloss.Width(badge), 0)
+	artistRow := artist + strings.Repeat(" ", artistPad) + badge
 
 	percent := 0.0
 	if m.duration > 0 {
@@ -270,8 +278,26 @@ func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 	bar := m.progress.ViewAs(percent)
 	timeStr := t.RowDim.Render(fmt.Sprintf(" %s / %s", formatTime(m.currPos), formatTime(m.duration)))
 
-	body := strings.Join([]string{head, artist, bar + timeStr}, "\n")
+	body := strings.Join([]string{head, artistRow, bar + timeStr}, "\n")
 	return renderPanel(t, "", false, w, 5, body)
+}
+
+// qualityBadge renders a compact label for the granted stream quality tier,
+// shown right-aligned on the artist row (mirrored against the artist name on
+// the left). Returns "" when no track has resolved a quality yet.
+func qualityBadge(quality string) string {
+	switch quality {
+	case "HI_RES_LOSSLESS":
+		return "hi-res"
+	case "LOSSLESS":
+		return "lossless"
+	case "HIGH":
+		return "high"
+	case "LOW":
+		return "low"
+	default:
+		return ""
+	}
 }
 
 // nowBarStatus renders the compact volume / device / shuffle readout shown at

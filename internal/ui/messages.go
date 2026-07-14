@@ -64,9 +64,10 @@ type (
 	tickMsg       time.Time
 	barTickMsg    time.Time
 	nowPlayingMsg struct {
-		done  <-chan struct{}
-		track *tidal.Track // refreshed track metadata (may be nil)
-		gen   uint64       // skip generation that spawned this command
+		done    <-chan struct{}
+		track   *tidal.Track // refreshed track metadata (may be nil)
+		gen     uint64       // skip generation that spawned this command
+		quality string       // granted stream quality tier, e.g. "HI_RES_LOSSLESS"
 	}
 	trackDoneMsg struct {
 		gen uint64

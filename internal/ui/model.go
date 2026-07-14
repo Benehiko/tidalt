@@ -162,14 +162,15 @@ type Model struct {
 	currentDevice string // hw device string, "" = auto-detect
 
 	// Player UI
-	currentTrack *tidal.Track
-	volume       float64
-	isPlaying    bool
-	advancing    bool   // true while auto-advancing to next track; suppresses re-trigger
-	skipGen      uint64 // monotonic counter; incremented on every doPlayTrack call
-	progress     progress.Model
-	currPos      float64
-	duration     float64
+	currentTrack   *tidal.Track
+	currentQuality string // granted stream quality tier for currentTrack, e.g. "HI_RES_LOSSLESS"
+	volume         float64
+	isPlaying      bool
+	advancing      bool   // true while auto-advancing to next track; suppresses re-trigger
+	skipGen        uint64 // monotonic counter; incremented on every doPlayTrack call
+	progress       progress.Model
+	currPos        float64
+	duration       float64
 
 	// Logo animation
 	logoFrame int
@@ -533,9 +534,9 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 
 		res := <-freshCh
 		if res.err == nil && res.track != nil {
-			return nowPlayingMsg{done: done, track: res.track, gen: gen}
+			return nowPlayingMsg{done: done, track: res.track, gen: gen, quality: info.Quality}
 		}
-		return nowPlayingMsg{done: done, gen: gen}
+		return nowPlayingMsg{done: done, gen: gen, quality: info.Quality}
 	}
 }
 
@@ -847,6 +848,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // stale — a newer doPlayTrack superseded this one
 		}
 		m.advancing = false
+		m.currentQuality = msg.quality
 		// Update currentTrack with refreshed metadata (includes cover UUID).
 		if msg.track != nil {
 			m.currentTrack = msg.track
