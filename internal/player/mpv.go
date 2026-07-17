@@ -340,7 +340,10 @@ func parseCardNum(hwDevice string) (int, error) {
 // name so that PipeWire/PulseAudio releases the hw: device before we open it.
 // If D-Bus is unavailable the function returns a no-op release func and nil error
 // so callers can proceed unconditionally.
-func reserveALSADevice(cardNum int) (release func(), err error) {
+// The context bounds the whole exchange: reservation happens on the playback
+// hot path (initial open and pause→resume reacquire), and a cancelled loop
+// must not linger here past stop()'s shutdown window.
+func reserveALSADevice(ctx context.Context, cardNum int) (release func(), err error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		// No session bus — skip reservation and try to open ALSA directly.
@@ -360,17 +363,33 @@ func reserveALSADevice(cardNum int) (release func(), err error) {
 	// If the call errors it means nobody currently holds the name (no owner to
 	// dispatch to), so the device is already free — skip straight to RequestName.
 	// Only treat an explicit released==false as a hard refusal.
+	// The call gets its own short deadline: the owner may be an instance that
+	// does not implement RequestRelease and never replies, and a bare Call
+	// would block forever. On timeout we proceed to RequestName, which uses
+	// ReplaceExisting and takes the name regardless.
 	obj := conn.Object(name, objPath)
 	var released bool
-	callErr := obj.Call("org.freedesktop.ReserveDevice1.RequestRelease", 0, int32(math.MaxInt32)).Store(&released)
+	callCtx, callCancel := context.WithTimeout(ctx, time.Second)
+	callErr := obj.CallWithContext(callCtx,
+		"org.freedesktop.ReserveDevice1.RequestRelease", 0, int32(math.MaxInt32)).Store(&released)
+	callCancel()
 	if callErr == nil && !released {
 		_ = conn.Close()
 		return nil, fmt.Errorf("audio device Audio%d is held by another process and refused to release", cardNum)
 	}
+	if ctx.Err() != nil {
+		_ = conn.Close()
+		return nil, ctx.Err()
+	}
 
 	// Give WirePlumber a moment to close its ALSA handle before we claim the
 	// name and open the device.
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-time.After(200 * time.Millisecond):
+	case <-ctx.Done():
+		_ = conn.Close()
+		return nil, ctx.Err()
+	}
 
 	// Claim the name with ReplaceExisting so we take it even if WirePlumber
 	// still holds it, and AllowReplacement so it can be returned on release.
@@ -401,8 +420,10 @@ type alsaHandle struct {
 // the source bit depth without enabling soft resampling (bit-perfect).
 // Retries busy opens for up to 2 seconds: after we reclaim the D-Bus
 // reservation on resume, WirePlumber may take a moment to close its own
-// handle, so the first opens can fail with EBUSY.
-func openALSA(device string, channels uint8, rate uint32, bits uint8) (*alsaHandle, error) {
+// handle, so the first opens can fail with EBUSY. The retry loop observes ctx
+// so a cancelled playback loop exits immediately instead of finishing the
+// retry window.
+func openALSA(ctx context.Context, device string, channels uint8, rate uint32, bits uint8) (*alsaHandle, error) {
 	cdev := C.CString(device)
 	defer C.free(unsafe.Pointer(cdev))
 
@@ -411,7 +432,8 @@ func openALSA(device string, channels uint8, rate uint32, bits uint8) (*alsaHand
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		rc := C.open_hw_pcm(cdev,
+		rc := C.open_hw_pcm(
+			cdev,
 			C.uint(channels), C.uint(rate), C.int(bits),
 			&handle, &result,
 		)
@@ -419,8 +441,12 @@ func openALSA(device string, channels uint8, rate uint32, bits uint8) (*alsaHand
 			break
 		}
 		if rc == -C.EBUSY && time.Now().Before(deadline) {
-			time.Sleep(150 * time.Millisecond)
-			continue
+			select {
+			case <-time.After(150 * time.Millisecond):
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
 		return nil, fmt.Errorf("open_hw_pcm(%s, ch=%d, rate=%d, bits=%d): %s",
 			device, channels, rate, bits, C.GoString(C.snd_strerror(rc)))
@@ -445,7 +471,12 @@ func openALSA(device string, channels uint8, rate uint32, bits uint8) (*alsaHand
 // use the returned channel directly rather than calling Done() separately to
 // avoid a race between stop() clearing doneCh and the new one being set.
 func (p *Player) Play(url string) (<-chan struct{}, error) {
-	p.stop()
+	// If the previous loop does not shut down within stop()'s window, refuse
+	// to start a second one: two loops would fight over the ALSA device and
+	// the D-Bus reservation, with the survivor playing the wrong track.
+	if !p.stop() {
+		return nil, errors.New("previous playback is still shutting down, try again")
+	}
 
 	// Resolve device and acquire D-Bus reservation synchronously so we can
 	// return an error to the caller if the device cannot be claimed.
@@ -459,12 +490,13 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 		return nil, err
 	}
 
-	releaseReservation, err := reserveALSADevice(cardNum)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	releaseReservation, err := reserveALSADevice(ctx, cardNum)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
 	doneCh := make(chan struct{})
 	loopDone := make(chan struct{})
 
@@ -518,7 +550,10 @@ func (p *Player) Play(url string) (<-chan struct{}, error) {
 	return doneCh, nil
 }
 
-func (p *Player) stop() {
+// stop cancels the running playback loop and waits for it to exit. Returns
+// false if the loop is still alive when the wait times out — callers must not
+// start a new loop in that case.
+func (p *Player) stop() bool {
 	p.mu.Lock()
 	cancel := p.cancel
 	loopDone := p.loopDone
@@ -533,8 +568,10 @@ func (p *Player) stop() {
 		select {
 		case <-loopDone:
 		case <-time.After(3 * time.Second):
+			return false
 		}
 	}
+	return true
 }
 
 // PlayNext signals the running playbackLoop to transition to a new track URL
@@ -648,11 +685,11 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 	// reacquireALSA re-claims the D-Bus reservation and reopens the ALSA
 	// device. Used after releasing on pause.
 	reacquireALSA := func() (*alsaHandle, func(), error) {
-		rel, rerr := reserveALSADevice(cardNum)
+		rel, rerr := reserveALSADevice(ctx, cardNum)
 		if rerr != nil {
 			return nil, nil, rerr
 		}
-		a, aerr := openALSA(device, channels, sampleRate, bits)
+		a, aerr := openALSA(ctx, device, channels, sampleRate, bits)
 		if aerr != nil {
 			rel()
 			return nil, nil, aerr
@@ -660,7 +697,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		return a, rel, nil
 	}
 
-	ah, err := openALSA(device, channels, sampleRate, bits)
+	ah, err := openALSA(ctx, device, channels, sampleRate, bits)
 	if err != nil {
 		logger.L.Error("openALSA failed", "device", device, "err", err)
 		releaseReservation()
@@ -809,46 +846,61 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 					releaseReservation = func() {}
 					logger.L.Debug("paused: ALSA device released")
 
-					for atomic.LoadUint32(&p.paused) == 1 {
-						select {
-						case target := <-p.seekCh:
-							// Reacquire before handling the seek.
-							newAH, newRel, raErr := reacquireALSA()
-							if raErr != nil {
-								logger.L.Error("reacquire ALSA after pause+seek failed", "err", raErr)
+					// Wait for resume; on a failed reacquire fall back to the
+					// paused state instead of aborting, so the loop stays
+					// controllable (skip, seek, stop all keep working) and the
+					// next resume attempt can succeed once the device frees up.
+					reacquired := false
+					for !reacquired {
+						for atomic.LoadUint32(&p.paused) == 1 {
+							select {
+							case target := <-p.seekCh:
+								// Reacquire before handling the seek.
+								newAH, newRel, raErr := reacquireALSA()
+								if raErr != nil {
+									if ctx.Err() != nil {
+										close(stopDecode)
+										for range pcmCh {
+										}
+										return 0, false, false
+									}
+									logger.L.Error("reacquire ALSA after pause+seek failed, staying paused", "err", raErr)
+									continue
+								}
+								ah = newAH
+								releaseReservation = newRel
+								return returnSeek(target)
+							case <-skipCh:
 								close(stopDecode)
 								for range pcmCh {
 								}
-								return 0, false, true
+								return 0, false, false
+							case <-ctx.Done():
+								close(stopDecode)
+								for range pcmCh {
+								}
+								return 0, false, false
+							case <-time.After(20 * time.Millisecond):
 							}
-							ah = newAH
-							releaseReservation = newRel
-							return returnSeek(target)
-						case <-skipCh:
-							close(stopDecode)
-							for range pcmCh {
-							}
-							return 0, false, false
-						case <-ctx.Done():
-							close(stopDecode)
-							for range pcmCh {
-							}
-							return 0, false, false
-						case <-time.After(20 * time.Millisecond):
 						}
-					}
 
-					// Resume: reacquire the device.
-					newAH, newRel, raErr := reacquireALSA()
-					if raErr != nil {
-						logger.L.Error("reacquire ALSA on resume failed", "err", raErr)
-						close(stopDecode)
-						for range pcmCh {
+						// Resume: reacquire the device.
+						newAH, newRel, raErr := reacquireALSA()
+						if raErr != nil {
+							if ctx.Err() != nil {
+								close(stopDecode)
+								for range pcmCh {
+								}
+								return 0, false, false
+							}
+							logger.L.Error("reacquire ALSA on resume failed, staying paused", "err", raErr)
+							atomic.StoreUint32(&p.paused, 1)
+							continue
 						}
-						return 0, false, true
+						ah = newAH
+						releaseReservation = newRel
+						reacquired = true
 					}
-					ah = newAH
-					releaseReservation = newRel
 					logger.L.Debug("resumed: ALSA device reacquired")
 					break
 				}
@@ -951,7 +1003,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 				sampleRate = newInfo.SampleRate
 				channels = newInfo.NChannels
 				bits = newInfo.BitsPerSample
-				ah, err = openALSA(device, channels, sampleRate, bits)
+				ah, err = openALSA(ctx, device, channels, sampleRate, bits)
 				if err != nil {
 					logger.L.Error("openALSA failed for next track", "err", err)
 					_ = resp.Body.Close()
@@ -960,11 +1012,11 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 				bps = ah.bytesPerSample
 				// Update the reacquireALSA closure to use the new format.
 				reacquireALSA = func() (*alsaHandle, func(), error) {
-					rel, rerr := reserveALSADevice(cardNum)
+					rel, rerr := reserveALSADevice(ctx, cardNum)
 					if rerr != nil {
 						return nil, nil, rerr
 					}
-					a, aerr := openALSA(device, channels, sampleRate, bits)
+					a, aerr := openALSA(ctx, device, channels, sampleRate, bits)
 					if aerr != nil {
 						rel()
 						return nil, nil, aerr
