@@ -399,8 +399,9 @@ type alsaHandle struct {
 
 // openALSA opens an ALSA hw device, negotiating the best available format for
 // the source bit depth without enabling soft resampling (bit-perfect).
-// Retries for up to 2 seconds to allow WirePlumber to fully close its handle
-// after releasing the D-Bus reservation.
+// Retries busy opens for up to 2 seconds: after we reclaim the D-Bus
+// reservation on resume, WirePlumber may take a moment to close its own
+// handle, so the first opens can fail with EBUSY.
 func openALSA(device string, channels uint8, rate uint32, bits uint8) (*alsaHandle, error) {
 	cdev := C.CString(device)
 	defer C.free(unsafe.Pointer(cdev))
@@ -408,10 +409,19 @@ func openALSA(device string, channels uint8, rate uint32, bits uint8) (*alsaHand
 	var handle *C.snd_pcm_t
 	var result C.alsa_open_result_t
 
-	if rc := C.open_hw_pcm(cdev,
-		C.uint(channels), C.uint(rate), C.int(bits),
-		&handle, &result,
-	); rc < 0 {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		rc := C.open_hw_pcm(cdev,
+			C.uint(channels), C.uint(rate), C.int(bits),
+			&handle, &result,
+		)
+		if rc >= 0 {
+			break
+		}
+		if rc == -C.EBUSY && time.Now().Before(deadline) {
+			time.Sleep(150 * time.Millisecond)
+			continue
+		}
 		return nil, fmt.Errorf("open_hw_pcm(%s, ch=%d, rate=%d, bits=%d): %s",
 			device, channels, rate, bits, C.GoString(C.snd_strerror(rc)))
 	}
@@ -568,10 +578,17 @@ func (p *Player) PlayNext(url string) (<-chan struct{}, error) {
 	return newDone, nil
 }
 
-// closeALSA drains and closes an ALSA handle.
+// closeALSA drains and closes an ALSA handle. It is idempotent: the pcm
+// pointer is cleared after closing so a second call (e.g. the playbackLoop
+// cleanup defer running after a pause already released the device) is a no-op
+// instead of a use-after-free inside libasound.
 func closeALSA(ah *alsaHandle) {
+	if ah == nil || ah.pcm == nil {
+		return
+	}
 	C.snd_pcm_drain(ah.pcm)
 	C.snd_pcm_close(ah.pcm)
+	ah.pcm = nil
 }
 
 // playbackLoop runs the full playback lifecycle for a track (and subsequent
@@ -786,6 +803,10 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 					C.snd_pcm_drop(ah.pcm)
 					closeALSA(ah)
 					releaseReservation()
+					// Neutralize the release func so the cleanup defer (or a
+					// failed-reacquire exit) cannot release the reservation a
+					// second time; a successful reacquire installs a new one.
+					releaseReservation = func() {}
 					logger.L.Debug("paused: ALSA device released")
 
 					for atomic.LoadUint32(&p.paused) == 1 {
