@@ -28,12 +28,21 @@ jobs:
   clang-tidy:
     name: lint-c
     runs-on: ubuntu-latest
+    # Both steps take well under a minute in practice; cap the job so a stalled
+    # apt-get fails fast and visibly instead of occupying a runner.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
       - name: Install clang-tidy and native dev headers
+        # DEBIAN_FRONTEND=noninteractive and --no-install-recommends keep the
+        # clang-tidy dependency chain from stalling on an interactive prompt;
+        # without them this step can hang indefinitely on the runner.
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-tidy pkg-config \
+          sudo apt-get update -qq
+          sudo -E apt-get install -y -qq --no-install-recommends \
+            clang-tidy pkg-config \
             libasound2-dev libavformat-dev libavcodec-dev \
             libavutil-dev libswresample-dev
       - name: clang-tidy
