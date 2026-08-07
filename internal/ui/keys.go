@@ -452,7 +452,11 @@ func (m Model) togglePlay() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	_ = m.player.Pause()
-	m.isPlaying = !m.isPlaying
+	// Read the state back rather than assuming the flip landed where we
+	// expected: the player can force itself back to paused on its own (a
+	// failed ALSA reacquire on resume), and toggling blindly from a stale
+	// belief inverts play/pause for the rest of the track.
+	m.isPlaying = !m.player.IsPaused()
 	m.pushState()
 	if m.isPlaying {
 		return m, tea.Batch(m.ensureBarsTicking()...)

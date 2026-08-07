@@ -77,6 +77,28 @@ type (
 		err error
 		gen uint64
 	}
+	// playbackFailedMsg is returned when the player refuses to start playback
+	// (e.g. the ALSA device could not be claimed, or the previous playback
+	// loop is still shutting down). doPlayTrack marks the track as playing
+	// synchronously, before the async body ever calls into the player, so this
+	// must roll that state back — otherwise the header shows the track as
+	// Playing with a ticking progress bar while nothing plays, and no
+	// trackDoneMsg ever arrives to advance the queue.
+	//
+	// Unlike skipErrMsg this deliberately does not auto-advance: the failure is
+	// with the audio device rather than the track, so the next track would fail
+	// the same way and walking the queue would just spam the device.
+	playbackFailedMsg struct {
+		err error
+		gen uint64
+	}
+	// playerPausedMsg reports that the player forced itself back into the
+	// paused state (a failed ALSA reacquire on resume). The UI drives
+	// play/pause optimistically, so it must resync or every later press does
+	// the opposite of its label.
+	playerPausedMsg struct {
+		err error
+	}
 	mprisMsg    mpris.Event
 	favoriteMsg struct {
 		trackID int

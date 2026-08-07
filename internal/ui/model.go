@@ -524,7 +524,7 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 		done, err := playFn(info.URL)
 		if err != nil {
 			logger.L.Error("playFn failed", "trackID", track.ID, "err", err)
-			return errMsg(err)
+			return playbackFailedMsg{err: err, gen: gen}
 		}
 		logger.L.Debug("doPlayTrack: playFn returned, calling SetDuration", "trackID", track.ID, "trackDuration", track.Duration)
 		if track.Duration > 0 {
@@ -643,6 +643,24 @@ func waitForTrackDone(done <-chan struct{}, gen uint64) tea.Cmd {
 	}
 }
 
+// watchPlayerPaused returns a command that blocks until the player reports it
+// forced itself back into the paused state, then sends a playerPausedMsg. The
+// handler re-registers it so the stream continues for the session's lifetime.
+// In client mode there is no local player to watch.
+func (m Model) watchPlayerPaused() tea.Cmd {
+	if m.player == nil {
+		return nil
+	}
+	ch := m.player.PausedEvents()
+	return func() tea.Msg {
+		err, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return playerPausedMsg{err: err}
+	}
+}
+
 // listenMPRIS returns a command that blocks until the next MPRIS event
 // arrives, then re-registers itself so the stream continues.
 func listenMPRIS(ch <-chan mpris.Event) tea.Cmd {
@@ -724,6 +742,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if !m.clientMode {
 		cmds = append(cmds, listenMPRIS(m.mprisCh))
+		if c := m.watchPlayerPaused(); c != nil {
+			cmds = append(cmds, c)
+		}
 	} else {
 		cmds = append(cmds, pollParentState(m.mprisClient))
 	}
@@ -988,6 +1009,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pushState()
 		return m, tea.Tick(5*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 
+	case playbackFailedMsg:
+		if msg.gen != m.skipGen {
+			break // stale — a newer skip superseded this attempt
+		}
+		// Roll back the optimistic state doPlayTrack set before calling the
+		// player, so the UI stops claiming a track is playing.
+		m.errText = msg.err.Error()
+		m.advancing = false
+		m.isPlaying = false
+		m.currentTrack = nil
+		m.currPos = 0
+		m.duration = 0
+		m.pushState()
+		return m, tea.Tick(5*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
+
+	case playerPausedMsg:
+		// The player paused itself; adopt its state rather than our own guess.
+		m.isPlaying = false
+		if msg.err != nil {
+			m.errText = msg.err.Error()
+		}
+		m.pushState()
+		return m, tea.Batch(
+			m.watchPlayerPaused(),
+			tea.Tick(5*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} }),
+		)
+
 	case playNextMsg:
 		if msg.gen != m.skipGen {
 			break // stale — a newer skip superseded this delayed advance
@@ -1227,7 +1275,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.playTrackCmd(track), listenMPRIS(m.mprisCh))
 			}
 			_ = m.player.Pause()
-			m.isPlaying = !m.isPlaying
+			// Read back the real state — see togglePlay in keys.go.
+			m.isPlaying = !m.player.IsPaused()
 		case mpris.CmdNext:
 			m.shufflePlayed = append(m.shufflePlayed, m.cursor)
 			next := m.nextIndex()
