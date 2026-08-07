@@ -24,3 +24,19 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.3
+
+  clang-tidy:
+    name: lint-c
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install clang-tidy and native dev headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy pkg-config \
+            libasound2-dev libavformat-dev libavcodec-dev \
+            libavutil-dev libswresample-dev
+      - name: clang-tidy
+        # The runner already provisions the dev headers, so lint natively
+        # rather than paying for a container pull.
+        run: LINT_C_NATIVE=1 ./lint-c.sh
