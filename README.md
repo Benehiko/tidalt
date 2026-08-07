@@ -219,6 +219,7 @@ This fallback only engages on a genuine format refusal. Transient failures — s
 - [Installation (packages, source, post-install setup)](docs/installation.md)
 - [Running in Docker](docs/docker.md)
 - [Architecture & audio pipeline](docs/architecture.md)
+- [Development (building, linting, git hooks)](docs/development.md)
 - [Client-server architecture & daemon mode](docs/client-server.md)
 - [MPRIS2 support](docs/mpris2.md)
 - [Importing from Spotify](docs/spotify-import.md)

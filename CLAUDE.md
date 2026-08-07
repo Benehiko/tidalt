@@ -4,7 +4,8 @@
 
 - **Go version**: 1.26+
 - **Format**: run `gofumpt -w .` after writing or editing any `.go` file
-- **Lint**: run `golangci-lint run` (v2) before finishing a task; fix all reported issues
+- **Lint (Go)**: run `golangci-lint run` (v2) before finishing a task; fix all reported issues
+- **Lint (C)**: run `./lint-c.sh` after editing any `.c`/`.h` file (containerised clang-tidy; `LINT_C_NATIVE=1` to use a local clang-tidy). Config in `.clang-tidy` — its `Checks:` block is a YAML folded scalar and must not contain `#` comments
 - **Build**: `go build ./...`
 - **CGO**: required — the player package links against libasound (`-lasound`)
 
@@ -20,6 +21,7 @@ Tidal API client.
 
 ### `internal/player`
 Bit-perfect FLAC playback via CGO + libasound.
+- The hand-written C lives in real translation units, not cgo preamble comments: `alsa.h`/`alsa.c` (PCM open + format negotiation, used by `mpv.go`) and `avcodec.h`/`avcodec.c` (FFmpeg decode pipeline, used by `avcodec.go`). The Go files keep only a minimal preamble that `#include`s the header plus the `#cgo` linker directives. `avio_read_cb` is implemented in Go via `//export` and declared in `avcodec.h`
 - Opens ALSA `hw:` devices directly, bypassing PipeWire/PulseAudio
 - Negotiates the best PCM format the DAC supports using `snd_pcm_hw_params` (no soft resampling)
 - Falls back to `plughw:` only when format negotiation itself is refused — i.e. `configure_hw_pcm` fails, tagged with the `errFormatRefused` sentinel — as on fixed-format USB interfaces such as the Focusrite Vocaster. A busy device fails at `open_hw_device` instead, which carries the existing `-EBUSY` retry against `hw:` and is never downgraded. The fallback is memoised per device, and `alsaHandle.bitPerfect` / `Player.AudioPath` propagate the downgrade up to the UI so the quality badge and device readout stop claiming untouched output

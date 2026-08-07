@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#
+# pre-commit — fast staged-file gate that mirrors CI.
+#
+# This is a thin dispatcher: it delegates to the same tooling the CI workflows
+# run (gofumpt, golangci-lint, go build, lint-c.sh) so "passes the hook" and
+# "passes CI" stay in lockstep. Slow gates — the full test suite, vulnerability
+# scanning — are deliberately left to CI so a commit never blocks for minutes.
+#
+# Activate with:  git config core.hooksPath .githooks
+# Bypass with:    git commit --no-verify
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+# Staged (added/copied/modified/renamed) files, split by type.
+mapfile -t staged_go < <(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
+mapfile -t staged_c  < <(git diff --cached --name-only --diff-filter=ACMR -- '*.c' '*.h')
+
+fail() {
+    echo "pre-commit: $1" >&2
+    exit 1
+}
+
+# ── Go ────────────────────────────────────────────────────────────────────────
+if [ "${#staged_go[@]}" -gt 0 ]; then
+    if command -v gofumpt >/dev/null 2>&1; then
+        # Report formatting drift without mutating the working tree — the commit
+        # must reflect exactly what was staged.
+        unformatted=$(gofumpt -l "${staged_go[@]}")
+        if [ -n "$unformatted" ]; then
+            echo "pre-commit: these staged files are not gofumpt-formatted:" >&2
+            echo "$unformatted" >&2
+            fail "run 'gofumpt -w .' and re-stage them."
+        fi
+    else
+        echo "pre-commit: gofumpt not found, skipping format check" >&2
+    fi
+
+    echo "pre-commit: go build ./..."
+    go build ./... || fail "go build failed."
+
+    if command -v golangci-lint >/dev/null 2>&1; then
+        echo "pre-commit: golangci-lint"
+        golangci-lint run || fail "golangci-lint reported issues."
+    else
+        echo "pre-commit: golangci-lint not found, skipping" >&2
+    fi
+fi
+
+# ── C ─────────────────────────────────────────────────────────────────────────
+# clang-tidy analyses translation units, not headers in isolation, so a staged
+# header only gets checked via the .c files that include it. The package has a
+# handful of sources and lints in seconds, so run the whole set whenever any C
+# file is staged rather than trying to map headers back to their includers.
+if [ "${#staged_c[@]}" -gt 0 ]; then
+    echo "pre-commit: clang-tidy"
+    bash lint-c.sh || fail "clang-tidy reported issues."
+fi
+
+echo "pre-commit: ok"

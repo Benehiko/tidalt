@@ -1,0 +1,50 @@
+# clang-tidy configuration for the hand-written C in internal/player.
+#
+# The C here is a thin, deliberate shim over libasound and FFmpeg, called
+# through cgo. Checks are selected for real defects — leaks, null derefs,
+# uninitialised reads, bad casts — rather than naming or style opinions, which
+# would fight the surrounding ALSA/FFmpeg idiom.
+#
+# Note: the Checks value below is a YAML folded scalar, so it cannot contain
+# comments — a '#' line inside it is folded into the check list as literal text
+# and silently corrupts the following entries. Rationale for each disabled
+# check therefore lives here:
+#
+#   bugprone-easily-swappable-parameters
+#     Flags the (channels, rate, bits) style signatures the ALSA API dictates.
+#   bugprone-narrowing-conversions
+#     FFmpeg's own API mixes int/int64_t widths throughout; narrowing at those
+#     boundaries is deliberate and explicitly cast where it matters.
+#   cert-dcl37-c / cert-dcl51-cpp
+#     Reserved-identifier rules that fire on system headers' own macros.
+#   misc-include-cleaner
+#     Wants every transitively-used FFmpeg symbol's exact header included
+#     directly; FFmpeg is designed around its umbrella headers.
+#   clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+#     Demands the C11 Annex K *_s functions (memcpy_s, memset_s), which glibc
+#     does not implement — there is no portable way to satisfy it on Linux.
+Checks: >
+  -*,
+  bugprone-*,
+  clang-analyzer-*,
+  cert-*,
+  misc-*,
+  performance-*,
+  portability-*,
+  readability-inconsistent-declaration-parameter-name,
+  readability-misleading-indentation,
+  readability-non-const-parameter,
+  readability-redundant-control-flow,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -cert-dcl37-c,
+  -cert-dcl51-cpp,
+  -misc-include-cleaner,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+
+# Only diagnose our own sources — never libasound/FFmpeg system headers.
+HeaderFilterRegex: '.*/internal/player/(alsa|avcodec)\.h$'
+
+WarningsAsErrors: '*'
+
+FormatStyle: none
