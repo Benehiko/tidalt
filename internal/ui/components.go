@@ -261,7 +261,21 @@ func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 	left := eq + " " + title
 	pad := max(inner-lipgloss.Width(left)-lipgloss.Width(status), 0)
 	head := left + strings.Repeat(" ", pad) + status
-	artist := t.RowDim.Render(truncateStr(m.currentTrack.Artist.Name, inner))
+
+	badge := ""
+	if q := m.currentQuality.Label(); q != "" {
+		// When the plughw: fallback engaged, ALSA is resampling/remixing, so
+		// the granted tier no longer describes what reaches the DAC. Mark the
+		// badge rather than letting it assert untouched output.
+		if !m.bitPerfect {
+			q += " (converted)"
+		}
+		badge = t.RowFaint.Render(q)
+	}
+	artistRoom := max(inner-lipgloss.Width(badge)-1, 1)
+	artist := t.RowDim.Render(truncateStr(m.currentTrack.Artist.Name, artistRoom))
+	artistPad := max(inner-lipgloss.Width(artist)-lipgloss.Width(badge), 0)
+	artistRow := artist + strings.Repeat(" ", artistPad) + badge
 
 	percent := 0.0
 	if m.duration > 0 {
@@ -270,12 +284,18 @@ func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 	bar := m.progress.ViewAs(percent)
 	timeStr := t.RowDim.Render(fmt.Sprintf(" %s / %s", formatTime(m.currPos), formatTime(m.duration)))
 
-	body := strings.Join([]string{head, artist, bar + timeStr}, "\n")
+	body := strings.Join([]string{head, artistRow, bar + timeStr}, "\n")
 	return renderPanel(t, "", false, w, 5, body)
 }
 
 // nowBarStatus renders the compact volume / device / shuffle readout shown at
 // the right of the now-playing bar.
+//
+// The device is reported bare (e.g. "hw:2,0") rather than labelled, because
+// this string is subtracted from the room available for the track title. The
+// "hw:"/"plughw:" prefix already identifies it. When the plughw: fallback
+// engaged, the device actually opened is shown instead of the requested one,
+// so the readout never claims a direct hw: path that isn't in use.
 func (m *Model) nowBarStatus(t Theme) string {
 	vol := fmt.Sprintf("vol %.0f%%", m.volume)
 	parts := []string{vol}
@@ -283,6 +303,9 @@ func (m *Model) nowBarStatus(t Theme) string {
 		parts = append(parts, "shuffle "+m.shuffleMode.String())
 	}
 	dev := m.currentDevice
+	if m.activeDevice != "" {
+		dev = m.activeDevice
+	}
 	if dev == "" {
 		dev = "auto"
 	}

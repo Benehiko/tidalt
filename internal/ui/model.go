@@ -162,7 +162,14 @@ type Model struct {
 	currentDevice string // hw device string, "" = auto-detect
 
 	// Player UI
-	currentTrack *tidal.Track
+	currentTrack   *tidal.Track
+	currentQuality tidal.Quality // granted stream quality tier for currentTrack
+	// activeDevice is the ALSA device actually opened, which differs from
+	// currentDevice when the plughw: fallback engaged. bitPerfect is false in
+	// that case: ALSA's plug layer is resampling/remixing, so the quality
+	// badge and device label must not claim untouched output.
+	activeDevice string
+	bitPerfect   bool
 	volume       float64
 	isPlaying    bool
 	advancing    bool   // true while auto-advancing to next track; suppresses re-trigger
@@ -313,6 +320,7 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 		focusMain:      true,
 		volume:         vol,
 		currentDevice:  currentDevice,
+		bitPerfect:     true,
 		progress:       progressWithTheme(theme, 40),
 		mprisCh:        mprisCh,
 		favorites:      make(map[int]bool),
@@ -360,6 +368,7 @@ func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStor
 		focusMain:      true,
 		volume:         vol,
 		currentDevice:  currentDevice,
+		bitPerfect:     true,
 		progress:       progressWithTheme(clientTint(palette).Theme(), 40),
 		favorites:      make(map[int]bool),
 		openURL:        openURL,
@@ -520,7 +529,7 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 			logger.L.Error("GetStreamURL failed", "trackID", track.ID, "err", err)
 			return skipErrMsg{err: err, gen: gen}
 		}
-		logger.L.Info("stream resolved", "trackID", track.ID, "ext", info.Ext)
+		logger.L.Info("stream resolved", "trackID", track.ID, "ext", info.Ext, "quality", info.Quality)
 		done, err := playFn(info.URL)
 		if err != nil {
 			logger.L.Error("playFn failed", "trackID", track.ID, "err", err)
@@ -533,9 +542,9 @@ func (m *Model) doPlayTrack(track tidal.Track, playFn func(string) (<-chan struc
 
 		res := <-freshCh
 		if res.err == nil && res.track != nil {
-			return nowPlayingMsg{done: done, track: res.track, gen: gen}
+			return nowPlayingMsg{done: done, track: res.track, gen: gen, quality: info.Quality}
 		}
-		return nowPlayingMsg{done: done, gen: gen}
+		return nowPlayingMsg{done: done, gen: gen, quality: info.Quality}
 	}
 }
 
@@ -780,9 +789,18 @@ func (m *Model) pushState() {
 	if m.mprisServer == nil {
 		return
 	}
-	trackJSON := mpris.MarshalTracks(m.currentTrack)
-	playlistJSON := mpris.MarshalTracks(m.tracks)
-	m.mprisServer.SetState(trackJSON, playlistJSON, m.isPlaying, m.currPos, m.duration, m.volume, m.currentDevice, m.shuffleMode.String())
+	m.mprisServer.SetState(mpris.PlayerState{
+		CurrentTrackJSON: mpris.MarshalTracks(m.currentTrack),
+		PlaylistJSON:     mpris.MarshalTracks(m.tracks),
+		Position:         m.currPos,
+		Duration:         m.duration,
+		Volume:           m.volume,
+		Device:           m.currentDevice,
+		ShuffleMode:      m.shuffleMode.String(),
+		Quality:          string(m.currentQuality),
+		ActiveDevice:     m.activeDevice,
+		BitPerfect:       m.bitPerfect,
+	}, m.isPlaying)
 }
 
 // pollParentState returns a tea.Cmd that fetches the parent's state once and
@@ -847,6 +865,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil // stale — a newer doPlayTrack superseded this one
 		}
 		m.advancing = false
+		m.currentQuality = msg.quality
 		// Update currentTrack with refreshed metadata (includes cover UUID).
 		if msg.track != nil {
 			m.currentTrack = msg.track
@@ -909,6 +928,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.isPlaying && !m.clientMode {
 			m.currPos, _ = m.player.GetPosition()
 			m.duration, _ = m.player.GetDuration()
+			// Track the device actually opened: the plughw: fallback can
+			// engage mid-session (e.g. on resume), and the badge/device
+			// label must stop claiming bit-perfect output when it does.
+			m.activeDevice, m.bitPerfect = m.player.AudioPath()
 			logger.L.Debug("tick: progress state",
 				"currPos", m.currPos,
 				"duration", m.duration,
@@ -967,6 +990,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if ps.Device != "" {
 			m.currentDevice = ps.Device
 		}
+		// Mirror the parent's audio path so the client's badge and device
+		// label describe the stream the parent is actually rendering.
+		m.currentQuality = tidal.Quality(ps.Quality)
+		m.activeDevice = ps.ActiveDevice
+		m.bitPerfect = ps.BitPerfect
 		if ps.ShuffleMode != "" {
 			switch ps.ShuffleMode {
 			case "Random":
@@ -1006,6 +1034,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 		}
 		m.isPlaying = false
+		m.currentQuality = ""
 		m.pushState()
 		return m, tea.Tick(5*time.Second, func(time.Time) tea.Msg { return clearErrMsg{} })
 
@@ -1061,6 +1090,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 			m.isPlaying = false
+			// The queue is exhausted; drop the granted tier so the badge
+			// doesn't linger describing the track that just finished.
+			m.currentQuality = ""
 			m.pushState()
 		}
 

@@ -270,6 +270,17 @@ type Player struct {
 	// hintDuration is set by SetDuration from the Tidal API track.Duration field
 	// and used as a fallback when totalSamples is 0 (e.g. streaming mp4).
 	hintDuration float64
+	// activeDevice is the ALSA device string actually opened, which differs
+	// from the requested one when the plughw: fallback engaged. bitPerfect
+	// reports whether that path preserves samples untouched.
+	activeDevice string
+	bitPerfect   bool
+
+	// plugFallback memoises devices whose hw: endpoint refused the requested
+	// format, so pause/resume and gapless transitions skip the known-failing
+	// hw: open (and its reservation stall) instead of re-paying it every time.
+	muPlug       sync.Mutex
+	plugFallback map[string]string
 
 	// Atomics: safe for concurrent access without a mutex
 	samplesPlayed uint64
@@ -294,6 +305,59 @@ func (p *Player) getDevice() (string, error) {
 		return override, nil
 	}
 	return detectDevice()
+}
+
+// effectiveDevice returns the device to actually open for the given requested
+// device, substituting the memoised plughw: equivalent when a previous open
+// established that this hw: endpoint refuses our format.
+func (p *Player) effectiveDevice(device string) string {
+	p.muPlug.Lock()
+	defer p.muPlug.Unlock()
+	if plug, ok := p.plugFallback[device]; ok {
+		return plug
+	}
+	return device
+}
+
+// rememberPlugFallback memoises that requested must be opened via plug so
+// subsequent reopens skip the known-failing hw: attempt.
+func (p *Player) rememberPlugFallback(requested, plug string) {
+	if requested == plug {
+		return
+	}
+	p.muPlug.Lock()
+	defer p.muPlug.Unlock()
+	if p.plugFallback == nil {
+		p.plugFallback = make(map[string]string)
+	}
+	p.plugFallback[requested] = plug
+}
+
+// openDevice opens the ALSA device for a playback loop, applying the memoised
+// plughw: fallback and recording the resulting path (device + bit-perfect
+// status) on the Player so the UI can surface it.
+func (p *Player) openDevice(ctx context.Context, requested string, channels uint8, rate uint32, bits uint8) (*alsaHandle, error) {
+	ah, err := openALSA(ctx, p.effectiveDevice(requested), channels, rate, bits)
+	if err != nil {
+		return nil, err
+	}
+	p.rememberPlugFallback(requested, ah.device)
+	p.muInfo.Lock()
+	p.activeDevice = ah.device
+	p.bitPerfect = ah.bitPerfect
+	p.muInfo.Unlock()
+	return ah, nil
+}
+
+// AudioPath reports the ALSA device actually in use and whether that path is
+// bit-perfect. Returns ("", true) before any device has been opened.
+func (p *Player) AudioPath() (device string, bitPerfect bool) {
+	p.muInfo.RLock()
+	defer p.muInfo.RUnlock()
+	if p.activeDevice == "" {
+		return "", true
+	}
+	return p.activeDevice, p.bitPerfect
 }
 
 func NewPlayer() *Player {
@@ -464,6 +528,7 @@ func reserveALSADevice(ctx context.Context, cardNum int) (release func(), err er
 
 type alsaHandle struct {
 	pcm             *C.snd_pcm_t
+	device          string // ALSA device string actually opened (may differ from the requested one on plughw: fallback)
 	format          C.snd_pcm_format_t
 	bytesPerSample  int
 	significantBits int // actual DAC bit depth
@@ -473,6 +538,10 @@ type alsaHandle struct {
 	availMin        uint64
 	startThreshold  uint64
 	stopThreshold   uint64
+	// bitPerfect reports whether samples reach the DAC untouched. False when
+	// the plughw: fallback engaged, meaning ALSA's plug layer is resampling
+	// and/or remixing to the hardware's fixed native shape.
+	bitPerfect bool
 }
 
 // openALSA opens an ALSA hw device, negotiating the best available format for
@@ -487,12 +556,59 @@ type alsaHandle struct {
 // whole budget on a failure that cannot resolve itself. The retry loop
 // observes ctx so a cancelled playback loop exits immediately instead of
 // finishing the retry window.
+//
+// If format negotiation itself is refused on a hw: device, the open is retried
+// once through ALSA's plug layer. Some USB interfaces (e.g. Focusrite's
+// Vocaster line) expose a fixed native channel-count/rate/format and reject
+// anything else; plughw: resamples and remixes to that shape. That forfeits
+// bit-perfect output, so the returned handle reports bitPerfect=false and
+// callers surface the downgrade. Only the negotiation step is eligible for
+// this fallback — a device that is merely busy is retried above as hw: and
+// never downgraded.
 func openALSA(ctx context.Context, device string, channels uint8, rate uint32, bits uint8) (*alsaHandle, error) {
+	handle, result, err := openALSARaw(ctx, device, channels, rate, bits)
+	bitPerfect := true
+	if err != nil && errors.Is(err, errFormatRefused) && strings.HasPrefix(device, "hw:") {
+		plugDevice := "plughw:" + strings.TrimPrefix(device, "hw:")
+		logger.L.Warn("openALSA: hw: refused the requested format, retrying via plughw: (output will no longer be bit-perfect)",
+			"device", device, "plugDevice", plugDevice, "err", err)
+		handle, result, err = openALSARaw(ctx, plugDevice, channels, rate, bits)
+		if err == nil {
+			device = plugDevice
+			bitPerfect = false
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &alsaHandle{
+		pcm:             handle,
+		device:          device,
+		format:          result.format,
+		bytesPerSample:  int(result.bytes_per_sample),
+		significantBits: int(result.significant_bits),
+		rate:            uint32(result.rate),
+		periodSize:      uint64(result.period_size),
+		bufferSize:      uint64(result.buffer_size),
+		availMin:        uint64(result.avail_min),
+		startThreshold:  uint64(result.start_threshold),
+		stopThreshold:   uint64(result.stop_threshold),
+		bitPerfect:      bitPerfect,
+	}, nil
+}
+
+// errFormatRefused marks a failure of the format-negotiation step, i.e. the
+// device answered the open but rejected the requested channel count, rate, or
+// sample format. It is the only condition that justifies falling back to
+// plughw:; a busy device is retried as hw: instead.
+var errFormatRefused = errors.New("device refused the requested PCM format")
+
+// openALSARaw opens and configures a single device, without any plughw:
+// fallback. The EBUSY retry covers only snd_pcm_open — see openALSA.
+func openALSARaw(ctx context.Context, device string, channels uint8, rate uint32, bits uint8) (handle *C.snd_pcm_t, result C.alsa_open_result_t, err error) {
 	cdev := C.CString(device)
 	defer C.free(unsafe.Pointer(cdev))
-
-	var handle *C.snd_pcm_t
-	var result C.alsa_open_result_t
 
 	deadline := time.Now().Add(openBusyRetryBudget)
 	for {
@@ -505,10 +621,10 @@ func openALSA(ctx context.Context, device string, channels uint8, rate uint32, b
 			case <-time.After(openBusyRetryInterval):
 				continue
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, result, ctx.Err()
 			}
 		}
-		return nil, fmt.Errorf("snd_pcm_open(%s): %s", device, C.GoString(C.snd_strerror(rc)))
+		return nil, result, fmt.Errorf("snd_pcm_open(%s): %s", device, C.GoString(C.snd_strerror(rc)))
 	}
 
 	// configure_hw_pcm closes the handle itself on failure.
@@ -516,22 +632,11 @@ func openALSA(ctx context.Context, device string, channels uint8, rate uint32, b
 		C.uint(channels), C.uint(rate), C.int(bits),
 		&handle, &result,
 	); rc < 0 {
-		return nil, fmt.Errorf("configure_hw_pcm(%s, ch=%d, rate=%d, bits=%d): %s",
-			device, channels, rate, bits, C.GoString(C.snd_strerror(rc)))
+		return nil, result, fmt.Errorf("configure_hw_pcm(%s, ch=%d, rate=%d, bits=%d): %s: %w",
+			device, channels, rate, bits, C.GoString(C.snd_strerror(rc)), errFormatRefused)
 	}
 
-	return &alsaHandle{
-		pcm:             handle,
-		format:          result.format,
-		bytesPerSample:  int(result.bytes_per_sample),
-		significantBits: int(result.significant_bits),
-		rate:            uint32(result.rate),
-		periodSize:      uint64(result.period_size),
-		bufferSize:      uint64(result.buffer_size),
-		availMin:        uint64(result.avail_min),
-		startThreshold:  uint64(result.start_threshold),
-		stopThreshold:   uint64(result.stop_threshold),
-	}, nil
+	return handle, result, nil
 }
 
 // Play starts playback of the given URL and returns the done channel for this
@@ -770,7 +875,7 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		if rerr != nil {
 			return nil, nil, rerr
 		}
-		a, aerr := openALSA(ctx, device, channels, sampleRate, bits)
+		a, aerr := p.openDevice(ctx, device, channels, sampleRate, bits)
 		if aerr != nil {
 			rel()
 			return nil, nil, aerr
@@ -778,14 +883,14 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		return a, rel, nil
 	}
 
-	ah, err := openALSA(ctx, device, channels, sampleRate, bits)
+	ah, err := p.openDevice(ctx, device, channels, sampleRate, bits)
 	if err != nil {
 		logger.L.Error("openALSA failed", "device", device, "err", err)
 		releaseReservation()
 		return false
 	}
 	logger.L.Debug("ALSA opened",
-		"device", device,
+		"device", ah.device,
 		"format", ah.format,
 		"bps", ah.bytesPerSample,
 		"significantBits", ah.significantBits,

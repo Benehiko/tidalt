@@ -1,6 +1,6 @@
 ![tidalt TUI](docs/tui.png)
 
-**tidalt** is a Tidal music player for Linux that delivers **bit-perfect, lossless audio** directly to your DAC — no PipeWire, no PulseAudio, no resampling.
+**tidalt** is a Tidal music player for Linux that delivers **bit-perfect, lossless audio** directly to your DAC — no PipeWire, no PulseAudio, no resampling. (A small number of USB interfaces expose a fixed native format and cannot be driven this way; see [fixed-format audio interfaces](#fixed-format-audio-interfaces).)
 
 It is built on top of the Tidal API and can run in three ways:
 
@@ -107,7 +107,7 @@ On first launch you will be prompted to log in via the Tidal OAuth2 device flow.
 - Artist view — browse an artist's full discography and play everything, their top tracks, or a single album
 - Song radio — build a queue of similar tracks for any song
 - Shuffle (Fisher-Yates pre-shuffle or random pick)
-- Bit-perfect FLAC playback via direct ALSA `hw:` — bypasses PipeWire/PulseAudio entirely
+- Bit-perfect FLAC playback via direct ALSA `hw:` — bypasses PipeWire/PulseAudio entirely (see [fixed-format devices](#fixed-format-audio-interfaces))
 - Auto-negotiates the best PCM format your DAC supports
 - Auto-advances through the queue; respects shuffle mode
 - Volume control and output device selection, both persisted between sessions
@@ -193,6 +193,14 @@ Auto-detection scans `/proc/asound/cards`. Any ALSA-visible device can be select
 | Hidizs S9 Pro Plus ("Martha") |       Yes        |
 | Focusrite Scarlett Solo      |       Yes        |
 | Any ALSA-visible device      | Manual (`d` key) |
+
+### Fixed-format audio interfaces
+
+Most DACs let tidalt negotiate the stream's native shape on the `hw:` endpoint, which is what makes bit-perfect output possible. A few USB audio interfaces — Focusrite's Vocaster line, for example — instead expose a *fixed* native channel count, sample rate, and format, and reject anything else outright.
+
+When tidalt detects that refusal it reopens the device through ALSA's plug layer (`plughw:`), which resamples and remixes to whatever the hardware accepts. Playback works, but the output is **no longer bit-perfect**. The now-playing bar makes this visible: the device readout shows the `plughw:` device actually in use, and the quality badge is marked `(converted)`.
+
+This fallback only engages on a genuine format refusal. Transient failures — such as PipeWire not having finished releasing the device — are retried against `hw:` as before, so a device that can do bit-perfect output is never silently downgraded.
 
 ---
 

@@ -22,6 +22,7 @@ Tidal API client.
 Bit-perfect FLAC playback via CGO + libasound.
 - Opens ALSA `hw:` devices directly, bypassing PipeWire/PulseAudio
 - Negotiates the best PCM format the DAC supports using `snd_pcm_hw_params` (no soft resampling)
+- Falls back to `plughw:` only when format negotiation itself is refused — i.e. `configure_hw_pcm` fails, tagged with the `errFormatRefused` sentinel — as on fixed-format USB interfaces such as the Focusrite Vocaster. A busy device fails at `open_hw_device` instead, which carries the existing `-EBUSY` retry against `hw:` and is never downgraded. The fallback is memoised per device, and `alsaHandle.bitPerfect` / `Player.AudioPath` propagate the downgrade up to the UI so the quality badge and device readout stop claiming untouched output
 - Format preference for 16-bit sources: S32_LE → S16_LE → S24_3LE → S24_LE (S32_LE first because some DACs, e.g. CS43198-based Hidizs S9 Pro Plus, have a broken S16_LE USB endpoint)
 - Format preference for 24-bit sources: S24_3LE → S24_LE → S32_LE
 - Acquires `org.freedesktop.ReserveDevice1.Audio{N}` on D-Bus before opening the device, asking PipeWire to release if it holds the reservation
