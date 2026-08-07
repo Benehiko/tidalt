@@ -39,7 +39,7 @@ jobs:
         run: sudo bash packaging/build-static-ffmpeg.sh /opt/ffmpeg
 
       - name: Build
-        run: go build -tags staticav -ldflags="-s -w" -o tidalt-linux-${{ matrix.goarch }} ./cmd/tidalt
+        run: go build -tags staticav -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o tidalt-linux-${{ matrix.goarch }} ./cmd/tidalt
 
       - uses: actions/upload-artifact@v5
         with:

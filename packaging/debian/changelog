@@ -1,3 +1,12 @@
+tidalt (4.0.2-1) unstable; urgency=medium
+
+  * Fix silent playback on fixed-format USB audio interfaces (e.g. Focusrite
+    Vocaster) by falling back to plughw: when format negotiation is refused.
+  * Fix a crash and playback-loop overlap when reacquiring the ALSA device
+    fails, and stop play/pause inverting after a failed resume.
+
+ -- Benehiko <https://github.com/Benehiko>  Fri, 07 Aug 2026 00:00:00 +0000
+
 tidalt (4.0.1-1) unstable; urgency=medium
 
   * Import a Spotify playlist or track into Tidal (no Spotify login required).

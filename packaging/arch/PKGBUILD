@@ -2,7 +2,7 @@
 pkgname=tidalt
 # Overridden at build time from the release tag (see packaging/arch/Dockerfile);
 # this default tracks the current major line.
-pkgver=4.0.1
+pkgver=4.0.2
 pkgrel=1
 pkgdesc="Tidal music player for Linux — bit-perfect FLAC via ALSA, MPRIS2, daemon mode"
 arch=('x86_64' 'aarch64')
