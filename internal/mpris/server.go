@@ -68,6 +68,13 @@ type PlayerState struct {
 	Device string
 	// ShuffleMode is the current shuffle mode string ("Off", "Shuffle", "Random").
 	ShuffleMode string
+	// Quality is the granted Tidal stream tier (e.g. "HI_RES_LOSSLESS"), or "".
+	Quality string
+	// ActiveDevice is the ALSA device actually opened, which differs from
+	// Device when the plughw: fallback engaged. BitPerfect is false in that
+	// case, meaning ALSA's plug layer is resampling/remixing.
+	ActiveDevice string
+	BitPerfect   bool
 }
 
 // ErrAlreadyRunning is returned by Start when another tidalt instance already
@@ -91,24 +98,17 @@ type Server struct {
 }
 
 // SetState pushes the current playback state so client instances can read it.
-// trackJSON and playlistJSON are JSON-encoded tidal.Track / []tidal.Track.
-func (s *Server) SetState(trackJSON, playlistJSON string, isPlaying bool, position, duration, volume float64, device, shuffleMode string) {
-	status := "Stopped"
+// ps.CurrentTrackJSON and ps.PlaylistJSON are JSON-encoded tidal.Track /
+// []tidal.Track. PlaybackStatus is derived from isPlaying and need not be set
+// by the caller.
+func (s *Server) SetState(ps PlayerState, isPlaying bool) {
+	ps.PlaybackStatus = "Stopped"
 	if isPlaying {
-		status = "Playing"
-	} else if trackJSON != "" {
-		status = "Paused"
+		ps.PlaybackStatus = "Playing"
+	} else if ps.CurrentTrackJSON != "" {
+		ps.PlaybackStatus = "Paused"
 	}
-	s.state.set(PlayerState{
-		CurrentTrackJSON: trackJSON,
-		PlaylistJSON:     playlistJSON,
-		PlaybackStatus:   status,
-		Position:         position,
-		Duration:         duration,
-		Volume:           volume,
-		Device:           device,
-		ShuffleMode:      shuffleMode,
-	})
+	s.state.set(ps)
 }
 
 // sharedState holds the mutable player state shared between the D-Bus handler
@@ -254,9 +254,25 @@ func (c *Client) SendDevice(hwName string) error {
 // GetState fetches the current playback state from the running instance.
 func (c *Client) GetState() (PlayerState, error) {
 	var trackJSON, playlistJSON, status, device, shuffleMode string
+	var quality, activeDevice string
+	var bitPerfect bool
 	var position, duration, volume float64
-	if err := c.obj.Call(appIface+".GetState", 0).Store(&trackJSON, &playlistJSON, &status, &position, &duration, &volume, &device, &shuffleMode); err != nil {
-		return PlayerState{}, err
+
+	call := c.obj.Call(appIface+".GetState", 0)
+	if call.Err != nil {
+		return PlayerState{}, call.Err
+	}
+	// The quality / audio-path fields were added after the original eight.
+	// Fall back to the shorter form so a client can still read state from an
+	// older parent instance rather than failing outright.
+	err := call.Store(&trackJSON, &playlistJSON, &status, &position, &duration, &volume,
+		&device, &shuffleMode, &quality, &activeDevice, &bitPerfect)
+	if err != nil {
+		quality, activeDevice, bitPerfect = "", "", true
+		if err := call.Store(&trackJSON, &playlistJSON, &status, &position, &duration, &volume,
+			&device, &shuffleMode); err != nil {
+			return PlayerState{}, err
+		}
 	}
 	return PlayerState{
 		CurrentTrackJSON: trackJSON,
@@ -267,6 +283,9 @@ func (c *Client) GetState() (PlayerState, error) {
 		Volume:           volume,
 		Device:           device,
 		ShuffleMode:      shuffleMode,
+		Quality:          quality,
+		ActiveDevice:     activeDevice,
+		BitPerfect:       bitPerfect,
 	}, nil
 }
 
@@ -380,9 +399,10 @@ func (a *tidalApp) SetDevice(hwName string) *dbus.Error {
 // GetState returns the current playback state for client instances.
 //
 //nolint:gocritic // multiple D-Bus property values are returned together by design
-func (a *tidalApp) GetState() (string, string, string, float64, float64, float64, string, string, *dbus.Error) {
+func (a *tidalApp) GetState() (string, string, string, float64, float64, float64, string, string, string, string, bool, *dbus.Error) {
 	ps := a.state.get()
-	return ps.CurrentTrackJSON, ps.PlaylistJSON, ps.PlaybackStatus, ps.Position, ps.Duration, ps.Volume, ps.Device, ps.ShuffleMode, nil
+	return ps.CurrentTrackJSON, ps.PlaylistJSON, ps.PlaybackStatus, ps.Position, ps.Duration, ps.Volume,
+		ps.Device, ps.ShuffleMode, ps.Quality, ps.ActiveDevice, ps.BitPerfect, nil
 }
 
 // --- org.freedesktop.DBus.Properties ----------------------------------------

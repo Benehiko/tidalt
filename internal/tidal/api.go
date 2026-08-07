@@ -236,18 +236,53 @@ func (t *Track) normalizeArtist() {
 	}
 }
 
+// Quality is a Tidal audio-quality tier, as accepted by the "audioquality"
+// stream parameter. This package owns the canonical ladder: callers should use
+// these constants and Label rather than re-listing the tier strings.
+type Quality string
+
+const (
+	QualityHiRes    Quality = "HI_RES_LOSSLESS"
+	QualityLossless Quality = "LOSSLESS"
+	QualityHigh     Quality = "HIGH"
+	QualityLow      Quality = "LOW"
+)
+
+// qualityLadder is the descending preference order tried by GetStreamURL.
+var qualityLadder = []Quality{QualityHiRes, QualityLossless, QualityHigh, QualityLow}
+
+// qualityLabels maps each tier to its short display label.
+var qualityLabels = map[Quality]string{
+	QualityHiRes:    "hi-res",
+	QualityLossless: "lossless",
+	QualityHigh:     "high",
+	QualityLow:      "low",
+}
+
+// Label returns a short human-readable label for the tier, suitable for a
+// compact UI badge. Unknown tiers fall back to the lower-cased raw value so a
+// tier added to the ladder still renders something rather than vanishing.
+func (q Quality) Label() string {
+	if l, ok := qualityLabels[q]; ok {
+		return l
+	}
+	if q == "" {
+		return ""
+	}
+	return strings.ToLower(strings.ReplaceAll(string(q), "_", " "))
+}
+
 // StreamInfo carries the resolved stream URL and its detected format extension.
 type StreamInfo struct {
 	URL     string
-	Ext     string // e.g. "flac", "mp4", "m4a"
-	Quality string // the tier that was actually granted, e.g. "HI_RES_LOSSLESS"
+	Ext     string  // e.g. "flac", "mp4", "m4a"
+	Quality Quality // the tier that was actually granted
 }
 
 func (c *Client) GetStreamURL(ctx context.Context, trackID int) (StreamInfo, error) {
-	qualities := []string{"HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"}
 	var lastErr error
 
-	for _, q := range qualities {
+	for _, q := range qualityLadder {
 		info, err := c.streamURLForQuality(ctx, trackID, q)
 		if err != nil {
 			lastErr = err
@@ -265,11 +300,11 @@ func (c *Client) GetStreamURL(ctx context.Context, trackID int) (StreamInfo, err
 // streamURLForQuality fetches the stream URL for a single audio-quality tier.
 // Pulled out of GetStreamURL so the response body is closed per attempt rather
 // than via a defer accumulated inside the quality-ladder loop.
-func (c *Client) streamURLForQuality(ctx context.Context, trackID int, q string) (StreamInfo, error) {
+func (c *Client) streamURLForQuality(ctx context.Context, trackID int, q Quality) (StreamInfo, error) {
 	endpoint := fmt.Sprintf("/tracks/%d/urlpostpaywall", trackID)
 	params := url.Values{}
 	params.Set("urlusagemode", "STREAM")
-	params.Set("audioquality", q)
+	params.Set("audioquality", string(q))
 	params.Set("assetpresentation", "FULL")
 	params.Set("countryCode", c.Session.CountryCode)
 
@@ -282,7 +317,7 @@ func (c *Client) streamURLForQuality(ctx context.Context, trackID int, q string)
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return StreamInfo{}, apiErr("get stream ("+q+")", resp.StatusCode, body)
+		return StreamInfo{}, apiErr("get stream ("+string(q)+")", resp.StatusCode, body)
 	}
 
 	var s StreamResponse

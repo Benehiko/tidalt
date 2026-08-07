@@ -263,7 +263,13 @@ func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 	head := left + strings.Repeat(" ", pad) + status
 
 	badge := ""
-	if q := qualityBadge(m.currentQuality); q != "" {
+	if q := m.currentQuality.Label(); q != "" {
+		// When the plughw: fallback engaged, ALSA is resampling/remixing, so
+		// the granted tier no longer describes what reaches the DAC. Mark the
+		// badge rather than letting it assert untouched output.
+		if !m.bitPerfect {
+			q += " (converted)"
+		}
 		badge = t.RowFaint.Render(q)
 	}
 	artistRoom := max(inner-lipgloss.Width(badge)-1, 1)
@@ -282,26 +288,14 @@ func (m *Model) renderNowPlayingBar(t Theme, w int) string {
 	return renderPanel(t, "", false, w, 5, body)
 }
 
-// qualityBadge renders a compact label for the granted stream quality tier,
-// shown right-aligned on the artist row (mirrored against the artist name on
-// the left). Returns "" when no track has resolved a quality yet.
-func qualityBadge(quality string) string {
-	switch quality {
-	case "HI_RES_LOSSLESS":
-		return "hi-res"
-	case "LOSSLESS":
-		return "lossless"
-	case "HIGH":
-		return "high"
-	case "LOW":
-		return "low"
-	default:
-		return ""
-	}
-}
-
 // nowBarStatus renders the compact volume / device / shuffle readout shown at
 // the right of the now-playing bar.
+//
+// The device is reported bare (e.g. "hw:2,0") rather than labelled, because
+// this string is subtracted from the room available for the track title. The
+// "hw:"/"plughw:" prefix already identifies it. When the plughw: fallback
+// engaged, the device actually opened is shown instead of the requested one,
+// so the readout never claims a direct hw: path that isn't in use.
 func (m *Model) nowBarStatus(t Theme) string {
 	vol := fmt.Sprintf("vol %.0f%%", m.volume)
 	parts := []string{vol}
@@ -309,10 +303,13 @@ func (m *Model) nowBarStatus(t Theme) string {
 		parts = append(parts, "shuffle "+m.shuffleMode.String())
 	}
 	dev := m.currentDevice
+	if m.activeDevice != "" {
+		dev = m.activeDevice
+	}
 	if dev == "" {
 		dev = "auto"
 	}
-	parts = append(parts, "device: "+dev)
+	parts = append(parts, dev)
 	return t.RowDim.Render(strings.Join(parts, "  ·  "))
 }
 
