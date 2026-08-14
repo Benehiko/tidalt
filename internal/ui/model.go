@@ -345,6 +345,7 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 		mprisServer:    srv,
 		kittySupported: KittySupported(),
 		ttyOut:         os.Stdout,
+		kitty:          &kittyState{},
 		themeName:      themeName,
 		palette:        palette,
 		theme:          theme,
@@ -394,6 +395,7 @@ func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStor
 		mprisClient:    mprisClient,
 		kittySupported: KittySupported(),
 		ttyOut:         os.Stdout,
+		kitty:          &kittyState{},
 		themeName:      themeName,
 		palette:        palette,
 		theme:          theme,
@@ -1509,9 +1511,17 @@ func (m *Model) syncKittyCover() {
 		return
 	}
 	if m.kitty == nil {
+		// Constructed models allocate this up front; this covers a Model built
+		// as a literal (tests) so graphics are not silently disabled.
 		m.kitty = &kittyState{}
 	}
 	ks := m.kitty
+	// Held across the whole reconcile, not just the write: the decision of what
+	// to draw and the drawing of it must be atomic, or two concurrent syncs can
+	// both observe the same "already drawn" state and emit overlapping
+	// transmissions.
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
 
 	col, row, panelW, imgRows, ok := m.coverBoxRect()
 	if !ok || !m.useKittyCover() {
@@ -1519,7 +1529,7 @@ func (m *Model) syncKittyCover() {
 		if ks.drawnKey != "" || ks.stale {
 			ks.drawnKey = ""
 			ks.stale = false
-			m.writeGfx(kittyClearAll())
+			m.writeGfx(kittyClearCover())
 		}
 		return
 	}
@@ -1528,22 +1538,32 @@ func (m *Model) syncKittyCover() {
 	if ks.drawnKey == key && !ks.stale {
 		return // already on screen unchanged — write nothing
 	}
-	if ks.encodeKey != key {
-		ks.escape = kittyImageAt(m.coverImage, col, row, panelW, imgRows)
-		ks.encodeKey = key
+
+	var out strings.Builder
+	// Upload the image only when the cover itself changed. A resize keeps the
+	// same pixels and only moves the box, so it re-places the image the
+	// terminal already holds — a few dozen bytes instead of a fresh ~1MB
+	// transmission per drag frame, which is what the terminal could not keep up
+	// with (it rendered partially-received images).
+	if ks.encodeKey != m.coverCacheKey {
+		ks.escape = kittyTransmit(m.coverImage)
+		ks.encodeKey = m.coverCacheKey
+		out.WriteString(ks.escape)
 	}
-	// Delete the previous placement before drawing: Kitty images live outside
-	// the cell grid, so a new transmission stacks on top of the old one rather
-	// than replacing it, leaving a copy stranded wherever the box used to be.
-	// Both writes go out together so a partial write cannot leave a delete
-	// applied without its redraw.
-	out := ks.escape
+	// Delete the previous placement before re-placing: placements stack rather
+	// than replace, so without this the old copy is stranded where the box used
+	// to be. Everything goes out in one write so a delete cannot land without
+	// the placement that replaces it.
 	if ks.drawnKey != "" || ks.stale {
-		out = kittyClearAll() + out
+		out.WriteString(kittyClearCover())
 	}
-	if !m.writeGfx(out) {
-		// The escape never reached the terminal — don't record it as drawn, or
-		// the next sync will skip the redraw and leave the box empty.
+	out.WriteString(kittyPlaceAt(col, row, panelW, imgRows))
+
+	if !m.writeGfx(out.String()) {
+		// Nothing reached the terminal — don't record it as drawn, or the next
+		// sync will skip the redraw and leave the box empty. The upload is
+		// dropped from the cache too, since it may have been truncated.
+		ks.encodeKey = ""
 		ks.drawnKey = ""
 		return
 	}
@@ -1554,6 +1574,12 @@ func (m *Model) syncKittyCover() {
 // writeGfx writes a graphics escape to the TTY, reporting whether it landed. A
 // failed write is not surfaced to the user: the cover is decorative, and the
 // terminal is the same channel any error message would have to travel over.
+//
+// The whole transmission is written in one call. io.WriteString on an *os.File
+// already loops over short writes, but the sequence must not be split across
+// calls: BubbleTea's renderer flushes frames to this same descriptor from its
+// own goroutine, and a text frame landing between two halves of a Kitty
+// transmission corrupts the image.
 func (m *Model) writeGfx(s string) bool {
 	if s == "" {
 		return true

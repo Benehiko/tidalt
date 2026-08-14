@@ -2,9 +2,12 @@ package ui
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -27,10 +30,14 @@ func kittyCoverModel(t *testing.T) (Model, *bytes.Buffer) {
 	m.coverCacheKey = "cover-a"
 	m.kittySupported = true
 	m.ttyOut = buf
+	m.kitty = &kittyState{}
 	return m, buf
 }
 
-const kittyDraw = "\x1b_Ga=T"
+const (
+	kittyUpload = "\x1b_Ga=t"
+	kittyPlace  = "\x1b_Ga=p"
+)
 
 // TestKittyCoverDrawsWithoutViewChange is the core regression: the image must
 // reach the terminal on its own, without relying on the View string. Escapes
@@ -41,10 +48,10 @@ func TestKittyCoverDrawsWithoutViewChange(t *testing.T) {
 	m, buf := kittyCoverModel(t)
 
 	m.syncKittyCover()
-	if !strings.Contains(buf.String(), kittyDraw) {
+	if !strings.Contains(buf.String(), kittyPlace) {
 		t.Fatalf("no draw escape written to the TTY on first sync")
 	}
-	if strings.Contains(m.View(), kittyDraw) {
+	if strings.Contains(m.View(), kittyPlace) {
 		t.Errorf("graphics escape leaked into the View string; the renderer will mangle it")
 	}
 
@@ -70,15 +77,95 @@ func TestKittyCoverResizeClearsOldPlacement(t *testing.T) {
 	m.syncKittyCover()
 
 	out := buf.String()
-	if !strings.Contains(out, kittyClearAll()) {
+	if !strings.Contains(out, kittyClearCover()) {
 		t.Errorf("resize did not delete the previous placement")
 	}
-	if !strings.Contains(out, kittyDraw) {
+	if !strings.Contains(out, kittyPlace) {
 		t.Errorf("resize did not redraw the cover")
 	}
-	if strings.Index(out, kittyClearAll()) > strings.Index(out, kittyDraw) {
+	if strings.Index(out, kittyClearCover()) > strings.Index(out, kittyPlace) {
 		t.Errorf("delete must precede the redraw, otherwise it erases the new image")
 	}
+}
+
+// TestKittyCoverResizeReusesUpload pins the behaviour that keeps a drag-resize
+// from corrupting the image. Re-uploading the full ~1MB PNG on every resize
+// frame swamped the terminal, which then rendered partially-received images (a
+// black box with a stepped edge). A resize keeps the same pixels, so it must
+// re-place the image the terminal already holds instead of re-transmitting it.
+func TestKittyCoverResizeReusesUpload(t *testing.T) {
+	m, buf := kittyCoverModel(t)
+	m.syncKittyCover()
+	if !strings.Contains(buf.String(), kittyUpload) {
+		t.Fatalf("first draw did not upload the image")
+	}
+
+	buf.Reset()
+	m.width, m.height = 100, 32
+	m.kitty.stale = true
+	m.syncKittyCover()
+
+	out := buf.String()
+	if strings.Contains(out, kittyUpload) {
+		t.Errorf("resize re-uploaded the image; it should re-place the cached one")
+	}
+	if !strings.Contains(out, kittyPlace) {
+		t.Errorf("resize did not place the image")
+	}
+	if len(out) > 4096 {
+		t.Errorf("resize wrote %d bytes; expected a small placement escape", len(out))
+	}
+
+	// A genuinely new cover must still upload.
+	buf.Reset()
+	m.coverCacheKey = "cover-b"
+	m.syncKittyCover()
+	if !strings.Contains(buf.String(), kittyUpload) {
+		t.Errorf("a new cover did not upload fresh image data")
+	}
+}
+
+// TestKittyCoverConcurrentSyncsSerialize guards the other half of the
+// corruption: BubbleTea runs every command in its own goroutine, so a burst of
+// resize messages puts several syncs in flight at once. A Kitty transmission is
+// a stateful escape sequence, so two interleaved on the same descriptor corrupt
+// each other. Run under -race.
+func TestKittyCoverConcurrentSyncsSerialize(t *testing.T) {
+	m, _ := kittyCoverModel(t)
+	m.ttyOut = &lockstepWriter{}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range 16 {
+		wg.Go(func() {
+			mm := m
+			// Distinct geometry and cover key per goroutine, so each one has
+			// real work to do and reaches the write rather than taking the
+			// "already drawn" early return.
+			mm.width, mm.height = 200-i, 60-i
+			mm.coverCacheKey = fmt.Sprintf("cover-%d", i)
+			<-start // release together to maximise overlap
+			mm.syncKittyCover()
+		})
+	}
+	close(start)
+	wg.Wait()
+}
+
+// lockstepWriter fails if two writes are ever in flight at once.
+type lockstepWriter struct {
+	mu     sync.Mutex
+	active atomic.Bool
+}
+
+func (w *lockstepWriter) Write(p []byte) (int, error) {
+	if !w.active.CompareAndSwap(false, true) {
+		panic("concurrent writes to the TTY: graphics escapes will interleave")
+	}
+	defer w.active.Store(false)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(p), nil
 }
 
 // TestKittyCoverHiddenWhenTerminalTooSmall checks that shrinking past the
@@ -101,10 +188,10 @@ func TestKittyCoverHiddenWhenTerminalTooSmall(t *testing.T) {
 			m.syncKittyCover()
 
 			out := buf.String()
-			if !strings.Contains(out, kittyClearAll()) {
+			if !strings.Contains(out, kittyClearCover()) {
 				t.Errorf("shrinking to %dx%d did not clear the cover", tc.w, tc.h)
 			}
-			if strings.Contains(out, kittyDraw) {
+			if strings.Contains(out, kittyPlace) {
 				t.Errorf("cover was redrawn at %dx%d despite being too small", tc.w, tc.h)
 			}
 
