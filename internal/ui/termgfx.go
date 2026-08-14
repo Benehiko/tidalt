@@ -26,7 +26,8 @@ func KittySupported() bool {
 const kittyChunkSize = 4096
 
 // kittyState memoizes the encoded cover image and tracks what is currently
-// drawn on screen, so View only re-encodes/re-transmits on a real change.
+// drawn on screen, so syncKittyCover only re-encodes/re-transmits on a real
+// change.
 type kittyState struct {
 	encodeKey string // cover UUID + box geometry the cached escape was built for
 	escape    string // cached draw escape for encodeKey

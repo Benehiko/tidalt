@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"io"
 	"math/rand/v2"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -234,15 +236,21 @@ type Model struct {
 	coverCacheKey string      // UUID of the currently displayed cover
 
 	// kittySupported is set once at startup; when true the Now-Playing cover is
-	// drawn with the Kitty graphics protocol (overlaid in View at absolute
-	// coordinates), otherwise Unicode block art is used.
+	// drawn with the Kitty graphics protocol at absolute coordinates, otherwise
+	// Unicode block art is used.
 	kittySupported bool
 
 	// kitty caches the expensive PNG-encode + tracks what was last emitted so
 	// the image escape is only re-encoded/re-sent on a real change (new cover
 	// or resize), not on every animation frame. Pointer-backed so the
-	// value-receiver View can update it.
+	// value-receiver Update can mutate it.
 	kitty *kittyState
+
+	// ttyOut is where Kitty graphics escapes are written. They cannot go
+	// through the View string — BubbleTea's renderer truncates and de-dupes
+	// lines, which mangles or drops them — so they are written out of band,
+	// after the frame that reserves the box has been painted.
+	ttyOut io.Writer
 
 	// Theme / color scheme.
 	// themeName is the registry key persisted to the store; palette is the
@@ -281,6 +289,15 @@ func (m *Model) activeTheme() Theme {
 		return pal.Theme()
 	}
 	return m.theme
+}
+
+// WithoutGraphics disables terminal graphics for this model. The daemon runs
+// the same model with tea.WithoutRenderer() and no TTY, where writing image
+// escapes to stdout would corrupt its log output.
+func (m Model) WithoutGraphics() Model {
+	m.kittySupported = false
+	m.ttyOut = nil
+	return m
 }
 
 func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsStore, srv *mpris.Server, openURL string) Model {
@@ -327,6 +344,7 @@ func InitialModel(ctx context.Context, client *tidal.Client, s *store.SecretsSto
 		openURL:        openURL,
 		mprisServer:    srv,
 		kittySupported: KittySupported(),
+		ttyOut:         os.Stdout,
 		themeName:      themeName,
 		palette:        palette,
 		theme:          theme,
@@ -375,6 +393,7 @@ func ClientModel(ctx context.Context, client *tidal.Client, s *store.SecretsStor
 		clientMode:     true,
 		mprisClient:    mprisClient,
 		kittySupported: KittySupported(),
+		ttyOut:         os.Stdout,
 		themeName:      themeName,
 		palette:        palette,
 		theme:          theme,
@@ -848,7 +867,37 @@ func (m *Model) maybeUpdateCover(t *tidal.Track) tea.Cmd {
 	return fetchCoverCmd(cover)
 }
 
+// Update handles a message and then schedules a reconcile of the Kitty cover
+// image.
+//
+// The graphics sync is funnelled through this one wrapper rather than the
+// individual message handlers: update returns from dozens of places and the
+// image must be reconciled after every one of them, not just the handful that
+// obviously touch the cover.
+//
+// It is scheduled as a command rather than run inline because BubbleTea writes
+// the new frame only *after* Update returns. Drawing inline would put the image
+// on screen just in time for the text frame to paint over it; the command runs
+// once that write has been issued.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	nm, ok := next.(Model)
+	if !ok {
+		return next, cmd
+	}
+	sync := func() tea.Msg {
+		nm.syncKittyCover()
+		return nil
+	}
+	if cmd == nil {
+		return nm, sync
+	}
+	// Batch, not Sequence: the sync must not queue behind a slow command such
+	// as a network fetch.
+	return nm, tea.Batch(cmd, sync)
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
@@ -1427,10 +1476,11 @@ func (m Model) View() string {
 		view = m.renderOverlay(t, view)
 	}
 
-	// Manage the Kitty cover image (memoized; only emits on a real change).
-	if m.kittySupported {
-		view += m.kittyFrame()
-	}
+	// The Kitty cover is NOT appended to the view: BubbleTea's standard
+	// renderer truncates each line to the terminal width and skips lines
+	// unchanged since the last frame, which mangles or silently drops a long
+	// graphics escape. It is written straight to the TTY from Update instead
+	// (see syncKittyCover).
 	return view
 }
 
@@ -1439,12 +1489,25 @@ func (m Model) View() string {
 // cells derived from the layout: the main pane begins after the sidebar + gap,
 // the panel border adds one column/row, and the cover box is the pane's first
 // inner rows.
-// kittyFrame returns the Kitty escape to append to this frame and updates the
-// memoized draw state. The expensive PNG encode runs only when the cover or box
-// geometry changes; the draw escape is emitted only when the on-screen image
-// must change (cover appears, changes, or must be cleared), so animation frames
-// that don't touch the cover send nothing — keeping navigation snappy.
-func (m *Model) kittyFrame() string {
+// syncKittyCover reconciles the on-screen Kitty cover with what the current
+// model state says should be there, writing escapes straight to the TTY.
+//
+// This deliberately bypasses the View string. BubbleTea's standard renderer
+// treats a frame as lines of text: it truncates each line to the terminal width
+// and skips any line identical to the previous frame. A graphics escape is
+// thousands of bytes on a single line and carries no visible width, so routing
+// it through View meant it was regularly truncated or skipped outright — the
+// image would fail to appear until an unrelated keypress changed that line's
+// text, and stale placements were never cleared because the clear escape was
+// dropped the same way.
+//
+// The expensive PNG encode still runs only when the cover or box geometry
+// changes, and nothing is written when the desired state already matches what
+// is on screen, so idle frames stay silent.
+func (m *Model) syncKittyCover() {
+	if !m.kittySupported || m.ttyOut == nil {
+		return
+	}
 	if m.kitty == nil {
 		m.kitty = &kittyState{}
 	}
@@ -1456,30 +1519,50 @@ func (m *Model) kittyFrame() string {
 		if ks.drawnKey != "" || ks.stale {
 			ks.drawnKey = ""
 			ks.stale = false
-			return kittyClearAll()
+			m.writeGfx(kittyClearAll())
 		}
-		return ""
+		return
 	}
 
 	key := fmt.Sprintf("%s@%dx%d+%d,%d", m.coverCacheKey, panelW, imgRows, col, row)
 	if ks.drawnKey == key && !ks.stale {
-		return "" // already on screen unchanged — emit nothing
+		return // already on screen unchanged — write nothing
 	}
 	if ks.encodeKey != key {
 		ks.escape = kittyImageAt(m.coverImage, col, row, panelW, imgRows)
 		ks.encodeKey = key
 	}
-	// A placement already on screen is not replaced by a new transmission —
-	// Kitty images sit outside the cell grid, so the old one must be deleted
-	// explicitly or it lingers at its previous coordinates (e.g. after a
-	// resize moves the cover box).
+	// Delete the previous placement before drawing: Kitty images live outside
+	// the cell grid, so a new transmission stacks on top of the old one rather
+	// than replacing it, leaving a copy stranded wherever the box used to be.
+	// Both writes go out together so a partial write cannot leave a delete
+	// applied without its redraw.
 	out := ks.escape
 	if ks.drawnKey != "" || ks.stale {
 		out = kittyClearAll() + out
 	}
+	if !m.writeGfx(out) {
+		// The escape never reached the terminal — don't record it as drawn, or
+		// the next sync will skip the redraw and leave the box empty.
+		ks.drawnKey = ""
+		return
+	}
 	ks.drawnKey = key
 	ks.stale = false
-	return out
+}
+
+// writeGfx writes a graphics escape to the TTY, reporting whether it landed. A
+// failed write is not surfaced to the user: the cover is decorative, and the
+// terminal is the same channel any error message would have to travel over.
+func (m *Model) writeGfx(s string) bool {
+	if s == "" {
+		return true
+	}
+	if _, err := io.WriteString(m.ttyOut, s); err != nil {
+		logger.L.Debug("kitty cover write failed", "err", err)
+		return false
+	}
+	return true
 }
 
 // coverBoxRect returns the 1-indexed screen position and cell size of the cover

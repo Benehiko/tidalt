@@ -69,7 +69,8 @@ func (m *Model) queueCoverWidth(paneW int) (int, bool) {
 }
 
 // renderQueueCover renders the cover panel for the track under the cursor. The
-// crisp Kitty image (when supported) is overlaid in View; this draws the box
+// crisp Kitty image (when supported) is written to the TTY separately; this
+// draws the box
 // (block art / placeholder) and the track metadata.
 func (m *Model) renderQueueCover(t Theme, w, h int) string {
 	tr := m.hoveredTrack()
@@ -235,7 +236,7 @@ func (m *Model) renderArtistAlbumPane(t Theme, w, h int) string {
 }
 
 // useKittyCover reports whether the Now-Playing cover should be drawn with the
-// Kitty graphics protocol (overlaid in View) instead of block art. Kitty is
+// Kitty graphics protocol (written straight to the TTY) instead of block art. Kitty is
 // only safe when no overlay is covering the pane, since the popup would not
 // hide a terminal-drawn image.
 func (m *Model) useKittyCover() bool {
