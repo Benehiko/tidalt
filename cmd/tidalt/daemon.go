@@ -56,7 +56,7 @@ func runDaemon() error {
 	// WithoutRenderer suppresses all terminal output — the model drives
 	// playback logic only; the UI is provided by client instances.
 	p := tea.NewProgram(
-		ui.InitialModel(ctx, client, vault, mprisServer, ""),
+		ui.InitialModel(ctx, client, vault, mprisServer, "").WithoutGraphics(),
 		tea.WithoutRenderer(),
 		tea.WithInput(nil),
 	)

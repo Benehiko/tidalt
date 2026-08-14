@@ -170,7 +170,7 @@ func rgbaOf(c color.Color) color.RGBA {
 // coverPanelLines returns h lines of text for the right-side panel showing
 // the album art (as Unicode block art) and track metadata. w is the panel
 // width in terminal columns. The crisp Kitty-graphics cover is drawn separately
-// as an overlay in View; this is the cell-grid path used as the fallback.
+// straight to the TTY; this is the cell-grid path used as the fallback.
 func coverPanelLines(img image.Image, title, artist, album string, w, h int) []string {
 	lines := make([]string, h)
 	if w <= 0 || h <= 0 {
