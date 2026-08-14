@@ -35,7 +35,9 @@ The sidebar groups every destination:
 - **NOW**
   - **Queue** — the live playback queue with the cover art of the *hovered* track
     on the right (Kitty graphics where supported, Unicode block-art otherwise);
-    moving the cursor previews each track's cover. See *The queue* below.
+    moving the cursor previews each track's cover. The cover panel is hidden
+    automatically when the terminal is too small to show it legibly, giving the
+    full width back to the track list. See *The queue* below.
 - **LIBRARY**
   - **Playlists** — a two-column view: the playlist index on the left, the
     selected playlist's tracks on the right. `Enter`/`→` opens a playlist;

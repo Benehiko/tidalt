@@ -859,6 +859,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.rebuildProgress()
+		// Force the cover to be re-emitted: a resize can leave stale Kitty
+		// placements behind even when the cover box lands on the same cells.
+		if m.kitty != nil {
+			m.kitty.stale = true
+		}
 
 	case nowPlayingMsg:
 		if msg.gen != m.skipGen {
@@ -1448,23 +1453,33 @@ func (m *Model) kittyFrame() string {
 	col, row, panelW, imgRows, ok := m.coverBoxRect()
 	if !ok || !m.useKittyCover() {
 		// Cover should not be shown: clear it once, then stay quiet.
-		if ks.drawnKey != "" {
+		if ks.drawnKey != "" || ks.stale {
 			ks.drawnKey = ""
+			ks.stale = false
 			return kittyClearAll()
 		}
 		return ""
 	}
 
 	key := fmt.Sprintf("%s@%dx%d+%d,%d", m.coverCacheKey, panelW, imgRows, col, row)
-	if ks.drawnKey == key {
+	if ks.drawnKey == key && !ks.stale {
 		return "" // already on screen unchanged — emit nothing
 	}
 	if ks.encodeKey != key {
 		ks.escape = kittyImageAt(m.coverImage, col, row, panelW, imgRows)
 		ks.encodeKey = key
 	}
+	// A placement already on screen is not replaced by a new transmission —
+	// Kitty images sit outside the cell grid, so the old one must be deleted
+	// explicitly or it lingers at its previous coordinates (e.g. after a
+	// resize moves the cover box).
+	out := ks.escape
+	if ks.drawnKey != "" || ks.stale {
+		out = kittyClearAll() + out
+	}
 	ks.drawnKey = key
-	return ks.escape
+	ks.stale = false
+	return out
 }
 
 // coverBoxRect returns the 1-indexed screen position and cell size of the cover

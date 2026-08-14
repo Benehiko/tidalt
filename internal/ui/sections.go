@@ -48,11 +48,20 @@ func (m *Model) renderQueuePane(t Theme, w, h int) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, listPanel, m.renderQueueCover(t, coverW, h))
 }
 
+// minCoverPaneW and minCoverBodyH are the smallest pane width and body height
+// that can hold a legible cover panel. Below either, the cover is hidden
+// entirely rather than squashed into a sliver that overlaps the surrounding UI.
+const (
+	minCoverPaneW = 70
+	minCoverBodyH = 12
+)
+
 // queueCoverWidth returns the width of the Queue's right-hand cover panel and
-// whether there is room to show it (hidden on narrow terminals).
+// whether there is room to show it (hidden on small terminals).
 func (m *Model) queueCoverWidth(paneW int) (int, bool) {
-	// Need a usable list plus a square-ish cover; require a comfortably wide pane.
-	if paneW < 70 {
+	// Need a usable list plus a square-ish cover; require a comfortably wide
+	// pane and enough rows that the image box is not reduced to its floor.
+	if paneW < minCoverPaneW || m.bodyHeight() < minCoverBodyH {
 		return 0, false
 	}
 	w := min(max(paneW/3, 26), 44)

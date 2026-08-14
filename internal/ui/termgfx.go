@@ -31,6 +31,11 @@ type kittyState struct {
 	encodeKey string // cover UUID + box geometry the cached escape was built for
 	escape    string // cached draw escape for encodeKey
 	drawnKey  string // the encodeKey currently displayed (""=nothing/cleared)
+
+	// stale marks that whatever is on screen can no longer be trusted — set on
+	// resize, where the terminal may keep placements at their old coordinates.
+	// The next frame clears and redraws unconditionally.
+	stale bool
 }
 
 // kittyClearAll returns the Kitty escape that deletes every image placement on
