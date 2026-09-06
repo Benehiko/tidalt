@@ -33,10 +33,11 @@ jobs:
 
       # Build a minimal, static FFmpeg (native arch) so the released raw binary
       # carries no FFmpeg runtime dependency and is portable across distros —
-      # matching the .deb/.rpm/docker artifacts. Installs to /opt/ffmpeg, which
-      # internal/player/avcodec_static.go links against under -tags staticav.
+      # matching the .deb/.rpm/docker artifacts. Installs to
+      # /tmp/tidalt-ffmpeg-static, which internal/player/avcodec_static.go
+      # links against under -tags staticav.
       - name: Build static FFmpeg
-        run: sudo bash packaging/build-static-ffmpeg.sh /opt/ffmpeg
+        run: bash packaging/build-static-ffmpeg.sh /tmp/tidalt-ffmpeg-static
 
       - name: Build
         run: go build -tags staticav -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o tidalt-linux-${{ matrix.goarch }} ./cmd/tidalt

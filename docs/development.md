@@ -85,7 +85,7 @@ compiles; cgo places both into the same package archive, so it links normally.
 
 FFmpeg linker flags stay in the build-tag-gated Go files — `avcodec_dynamic.go`
 (default, system shared libraries) and `avcodec_static.go` (`-tags staticav`,
-the bundled static FFmpeg under `/opt/ffmpeg` used for distro packages).
+the bundled static FFmpeg under `/tmp/tidalt-ffmpeg-static` used for distro packages).
 
 ### Linting the C
 
