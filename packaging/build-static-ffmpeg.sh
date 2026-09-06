@@ -15,7 +15,7 @@
 # Usage:
 #   build-static-ffmpeg.sh [PREFIX] [TARGETARCH]
 #
-#   PREFIX      install prefix (default: /opt/ffmpeg). Must match the path in
+#   PREFIX      install prefix (default: /tmp/tidalt-ffmpeg-static). Must match the path in
 #               internal/player/avcodec_static.go.
 #   TARGETARCH  Go-style arch of the build target: amd64 | arm64
 #               (default: native — no cross-compilation).
@@ -24,8 +24,8 @@
 # the aarch64-linux-gnu-* cross toolchain.
 set -euo pipefail
 
-FFMPEG_VERSION="${FFMPEG_VERSION:-7.1.1}"
-PREFIX="${1:-/opt/ffmpeg}"
+FFMPEG_VERSION="${FFMPEG_VERSION:-7.1.5}"
+PREFIX="${1:-/tmp/tidalt-ffmpeg-static}"
 TARGETARCH="${2:-}"
 
 case "${TARGETARCH}" in

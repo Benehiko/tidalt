@@ -17,7 +17,7 @@ RUN dpkg --add-architecture ${TARGETARCH} && \
     rm -rf /var/lib/apt/lists/*
 
 COPY packaging/build-static-ffmpeg.sh /build-static-ffmpeg.sh
-RUN bash /build-static-ffmpeg.sh /opt/ffmpeg ${TARGETARCH}
+RUN bash /build-static-ffmpeg.sh /tmp/tidalt-ffmpeg-static ${TARGETARCH}
 
 # ── Build stage: compile the binary, statically linking the FFmpeg above ──────
 FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS build
@@ -27,7 +27,7 @@ ARG VERSION
 
 WORKDIR /src
 COPY . .
-COPY --from=ffmpeg /opt/ffmpeg /opt/ffmpeg
+COPY --from=ffmpeg /tmp/tidalt-ffmpeg-static /tmp/tidalt-ffmpeg-static
 
 RUN dpkg --add-architecture ${TARGETARCH} && \
     apt-get update && \
