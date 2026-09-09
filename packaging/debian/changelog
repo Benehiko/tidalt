@@ -1,3 +1,14 @@
+tidalt (4.0.3-1) unstable; urgency=medium
+
+  * Fix Daily Mixes returning a 404 after Tidal removed the v2
+    userRecommendations API; the mix list and mix tracks now come from the v1
+    API, which also removes a per-track request fan-out.
+  * Clear stale Kitty cover-art placements on terminal resize.
+  * Bump the bundled static FFmpeg to 7.1.5 and drop the sudo requirement from
+    the build.
+
+ -- Benehiko <https://github.com/Benehiko>  Wed, 09 Sep 2026 00:00:00 +0000
+
 tidalt (4.0.2-1) unstable; urgency=medium
 
   * Fix silent playback on fixed-format USB audio interfaces (e.g. Focusrite
