@@ -18,6 +18,7 @@ Entry point. Handles signal setup, session load/restore from the secrets store, 
 Tidal API client.
 - `client.go` — OAuth2 device-flow authentication, token refresh, authenticated HTTP client
 - `api.go` — REST calls: favorites, search, track lookup, stream URL (quality ladder: HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW), mixes, mix tracks, artist albums/top-tracks/all-tracks
+- Daily Mixes use the v1 API: `GET /v1/pages/my_collection_my_mixes` for the list, `GET /v1/mixes/{mixId}/items` for a mix's tracks (fully populated, one request). The v2 `openapi.tidal.com/v2/userRecommendations` resource was removed by Tidal and now 404s — do not reintroduce it. Video mixes and non-`track` items are filtered out, since the player cannot decode video
 
 ### `internal/player`
 Bit-perfect FLAC playback via CGO + libasound.

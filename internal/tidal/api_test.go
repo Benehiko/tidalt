@@ -3,6 +3,7 @@ package tidal_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -294,45 +295,40 @@ func TestGetFavorites_OK(t *testing.T) {
 
 // --- GetMixes ---
 
+// mixPage builds a v1 "pages/my_collection_my_mixes" payload from the given
+// mix entries.
+func mixPage(items ...map[string]any) map[string]any {
+	return map[string]any{
+		"rows": []map[string]any{{
+			"modules": []map[string]any{{
+				"type": "MIX_LIST",
+				"pagedList": map[string]any{
+					"totalNumberOfItems": len(items),
+					"items":              items,
+				},
+			}},
+		}},
+	}
+}
+
 func TestGetMixes_OK(t *testing.T) {
-	// Build a v2 JSON:API response: two mix references + their playlist attributes
-	// in included.
-	type playlistObj struct {
-		ID         string `json:"id"`
-		Type       string `json:"type"`
-		Attributes struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
-		} `json:"attributes"`
-	}
-
-	pl1 := playlistObj{ID: "mix1", Type: "playlists"}
-	pl1.Attributes.Name = "Daily Mix"
-	pl1.Attributes.Description = "Your daily picks"
-
-	pl2 := playlistObj{ID: "mix2", Type: "playlists"}
-	pl2.Attributes.Name = "Chill Mix"
-	pl2.Attributes.Description = "Relaxing vibes"
-
-	inc1, err := json.Marshal(pl1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inc2, err := json.Marshal(pl2)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	payload := map[string]any{
-		"data": []map[string]string{
-			{"id": "mix1", "type": "playlists"},
-			{"id": "mix2", "type": "playlists"},
+	payload := mixPage(
+		map[string]any{
+			"id":       "mix1",
+			"title":    "Daily Mix",
+			"subTitle": "Your daily picks",
+			"mixType":  "DAILY_MIX",
 		},
-		"included": []json.RawMessage{inc1, inc2},
-	}
+		map[string]any{
+			"id":       "mix2",
+			"title":    "Chill Mix",
+			"subTitle": "Relaxing vibes",
+			"mixType":  "DISCOVERY_MIX",
+		},
+	)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/userRecommendations/me/relationships/myMixes") {
+		if !strings.Contains(r.URL.Path, "/pages/my_collection_my_mixes") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		respond(w, 200, payload)
@@ -349,20 +345,47 @@ func TestGetMixes_OK(t *testing.T) {
 	if mixes[0].Title != "Daily Mix" || mixes[1].Title != "Chill Mix" {
 		t.Errorf("unexpected mix titles: %+v", mixes)
 	}
+	if mixes[0].ID != "mix1" {
+		t.Errorf("unexpected mix ID: %q", mixes[0].ID)
+	}
 	if mixes[0].SubTitle != "Your daily picks" {
 		t.Errorf("unexpected subtitle: %q", mixes[0].SubTitle)
 	}
 }
 
-func TestGetMixes_MissingIncluded(t *testing.T) {
-	// data references mix IDs that have no matching included entry —
-	// the title should fall back to the raw ID.
-	payload := map[string]any{
-		"data": []map[string]string{
-			{"id": "orphan-mix", "type": "playlists"},
-		},
-		"included": []json.RawMessage{},
+func TestGetMixes_SkipsVideoMixes(t *testing.T) {
+	// Video mixes serve video items, which the player cannot decode, so they
+	// must not appear in the list.
+	payload := mixPage(
+		map[string]any{"id": "mix1", "title": "My Mix 1", "mixType": "DAILY_MIX"},
+		map[string]any{"id": "vid1", "title": "My Video Mix 1", "mixType": "VIDEO_DAILY_MIX"},
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		respond(w, 200, payload)
+	}))
+	defer srv.Close()
+
+	mixes, err := newTestClient(srv).GetMixes(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
+	if len(mixes) != 1 {
+		t.Fatalf("expected 1 mix (video mix skipped), got %d", len(mixes))
+	}
+	if mixes[0].ID != "mix1" {
+		t.Errorf("unexpected mix: %+v", mixes[0])
+	}
+}
+
+func TestGetMixes_SkipsDuplicatesAndBlankIDs(t *testing.T) {
+	// A page can repeat the same mix across modules; entries without an ID are
+	// unusable.
+	payload := mixPage(
+		map[string]any{"id": "mix1", "title": "My Mix 1", "mixType": "DAILY_MIX"},
+		map[string]any{"id": "mix1", "title": "My Mix 1", "mixType": "DAILY_MIX"},
+		map[string]any{"id": "", "title": "Nameless", "mixType": "DAILY_MIX"},
+	)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		respond(w, 200, payload)
@@ -376,24 +399,53 @@ func TestGetMixes_MissingIncluded(t *testing.T) {
 	if len(mixes) != 1 {
 		t.Fatalf("expected 1 mix, got %d", len(mixes))
 	}
-	if mixes[0].Title != "orphan-mix" {
-		t.Errorf("expected fallback to ID, got %q", mixes[0].Title)
+}
+
+func TestGetMixes_NullDescription(t *testing.T) {
+	// Tidal sends "description": null for every mix; it must decode to "".
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"rows":[{"modules":[{"pagedList":{"items":[
+			{"id":"mix1","title":"My Mix 1","subTitle":"a, b and more","description":null,"mixType":"DAILY_MIX"}
+		]}}]}]}`))
+	}))
+	defer srv.Close()
+
+	mixes, err := newTestClient(srv).GetMixes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mixes) != 1 {
+		t.Fatalf("expected 1 mix, got %d", len(mixes))
+	}
+	if mixes[0].Description != "" {
+		t.Errorf("expected empty description, got %q", mixes[0].Description)
+	}
+}
+
+func TestGetMixes_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		respond(w, 404, map[string]any{"userMessage": "Resource not found"})
+	}))
+	defer srv.Close()
+
+	if _, err := newTestClient(srv).GetMixes(context.Background()); err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
 
 // --- GetMixTracks ---
 
-func TestGetMixTracks_OK(t *testing.T) {
-	// The v2 playlist endpoint returns IDs only; individual v1 /tracks/{id}
-	// requests return full track objects with artist and album populated.
-	v2Payload := map[string]any{
-		"data": []map[string]string{
-			{"id": "101", "type": "tracks"},
-			{"id": "202", "type": "tracks"},
-		},
-		"included": []json.RawMessage{},
+// mixItems builds a v1 /mixes/{id}/items payload from typed entries.
+func mixItems(entries ...map[string]any) map[string]any {
+	return map[string]any{
+		"totalNumberOfItems": len(entries),
+		"items":              entries,
 	}
+}
 
+func TestGetMixTracks_OK(t *testing.T) {
+	// The v1 mix items endpoint returns fully populated tracks in one request.
 	track1 := tidal.Track{ID: 101, Title: "Big Song"}
 	track1.Artist.Name = "The Band"
 	track1.Album.Title = "The Album"
@@ -402,18 +454,18 @@ func TestGetMixTracks_OK(t *testing.T) {
 	track2.Artist.Name = "Other Artist"
 	track2.Album.Title = "Other Album"
 
+	payload := mixItems(
+		map[string]any{"item": track1, "type": "track"},
+		map[string]any{"item": track2, "type": "track"},
+	)
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.Contains(r.URL.Path, "/playlists/mix1/relationships/items"):
-			respond(w, 200, v2Payload)
-		case strings.HasSuffix(r.URL.Path, "/tracks/101"):
-			respond(w, 200, track1)
-		case strings.HasSuffix(r.URL.Path, "/tracks/202"):
-			respond(w, 200, track2)
-		default:
+		if !strings.Contains(r.URL.Path, "/mixes/mix1/items") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
+			return
 		}
+		respond(w, 200, payload)
 	}))
 	defer srv.Close()
 
@@ -424,7 +476,7 @@ func TestGetMixTracks_OK(t *testing.T) {
 	if len(tracks) != 2 {
 		t.Fatalf("expected 2 tracks, got %d", len(tracks))
 	}
-	// Playlist order must be preserved: 101 first, 202 second.
+	// Mix order must be preserved: 101 first, 202 second.
 	if tracks[0].ID != 101 || tracks[0].Title != "Big Song" {
 		t.Errorf("unexpected track[0]: %+v", tracks[0])
 	}
@@ -439,70 +491,13 @@ func TestGetMixTracks_OK(t *testing.T) {
 	}
 }
 
-func TestGetMixTracks_PreservesPlaylistOrder(t *testing.T) {
-	// v2 returns IDs in order [202, 101]; concurrent v1 fetches may complete in
-	// any order — GetMixTracks must restore the playlist order.
-	v2Payload := map[string]any{
-		"data": []map[string]string{
-			{"id": "202", "type": "tracks"},
-			{"id": "101", "type": "tracks"},
-		},
-		"included": []json.RawMessage{},
-	}
-
-	track1 := tidal.Track{ID: 101, Title: "Alpha"}
-	track2 := tidal.Track{ID: 202, Title: "Beta"}
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.Contains(r.URL.Path, "/playlists/"):
-			respond(w, 200, v2Payload)
-		case strings.HasSuffix(r.URL.Path, "/tracks/101"):
-			respond(w, 200, track1)
-		case strings.HasSuffix(r.URL.Path, "/tracks/202"):
-			respond(w, 200, track2)
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	tracks, err := newTestClient(srv).GetMixTracks(context.Background(), "mix1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tracks) != 2 {
-		t.Fatalf("expected 2 tracks, got %d", len(tracks))
-	}
-	if tracks[0].ID != 202 || tracks[1].ID != 101 {
-		t.Errorf("order not preserved: got [%d, %d], want [202, 101]", tracks[0].ID, tracks[1].ID)
-	}
-}
-
-func TestGetMixTracks_SkipsUnavailableTracks(t *testing.T) {
-	// Track 404s (unavailable in country / removed) should be silently skipped.
-	v2Payload := map[string]any{
-		"data": []map[string]string{
-			{"id": "101", "type": "tracks"},
-			{"id": "999", "type": "tracks"}, // will 404
-		},
-		"included": []json.RawMessage{},
-	}
-
-	track1 := tidal.Track{ID: 101, Title: "Available"}
-	track1.Artist.Name = "Artist"
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.Contains(r.URL.Path, "/playlists/"):
-			respond(w, 200, v2Payload)
-		case strings.HasSuffix(r.URL.Path, "/tracks/101"):
-			respond(w, 200, track1)
-		case strings.HasSuffix(r.URL.Path, "/tracks/999"):
-			respond(w, 404, map[string]string{"error": "not found"})
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
+func TestGetMixTracks_NormalizesArtist(t *testing.T) {
+	// Some payloads carry only the plural "artists" array.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"type":"track","item":{
+			"id":101,"title":"Song","artists":[{"id":7,"name":"Plural Only"}]
+		}}]}`))
 	}))
 	defer srv.Close()
 
@@ -511,29 +506,22 @@ func TestGetMixTracks_SkipsUnavailableTracks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(tracks) != 1 {
-		t.Fatalf("expected 1 track (404 skipped), got %d", len(tracks))
+		t.Fatalf("expected 1 track, got %d", len(tracks))
 	}
-	if tracks[0].ID != 101 {
-		t.Errorf("unexpected track: %+v", tracks[0])
+	if tracks[0].Artist.Name != "Plural Only" || tracks[0].Artist.ID != 7 {
+		t.Errorf("artist not normalized: %+v", tracks[0].Artist)
 	}
 }
 
-func TestGetMixTracks_SkipsNonTrackRefs(t *testing.T) {
-	// data contains only a "videos" ref — no v1 track requests should be made.
-	v2Payload := map[string]any{
-		"data": []map[string]string{
-			{"id": "v1", "type": "videos"},
-		},
-		"included": []json.RawMessage{},
-	}
+func TestGetMixTracks_SkipsNonTrackItems(t *testing.T) {
+	// Video items cannot be decoded by the player and must be dropped.
+	payload := mixItems(
+		map[string]any{"item": tidal.Track{ID: 101, Title: "Song"}, "type": "track"},
+		map[string]any{"item": tidal.Track{ID: 555, Title: "Clip"}, "type": "video"},
+	)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/playlists/") {
-			respond(w, 200, v2Payload)
-			return
-		}
-		t.Errorf("unexpected request to %s — should not fetch tracks when IDs list is empty", r.URL.Path)
-		w.WriteHeader(http.StatusInternalServerError)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		respond(w, 200, payload)
 	}))
 	defer srv.Close()
 
@@ -541,7 +529,22 @@ func TestGetMixTracks_SkipsNonTrackRefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tracks) != 0 {
-		t.Errorf("expected 0 tracks, got %d", len(tracks))
+	if len(tracks) != 1 {
+		t.Fatalf("expected 1 track (video skipped), got %d", len(tracks))
+	}
+	if tracks[0].ID != 101 {
+		t.Errorf("unexpected track: %+v", tracks[0])
+	}
+}
+
+func TestGetMixTracks_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		respond(w, 404, map[string]any{"userMessage": "Resource not found"})
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(srv).GetMixTracks(context.Background(), "gone")
+	if !errors.Is(err, tidal.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
