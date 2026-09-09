@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -156,21 +155,41 @@ type artistTopTracksResponse struct {
 	Items []Track `json:"items"`
 }
 
-// v2 JSON:API types for mixes and playlist items.
+// mixTracksLimit caps how many items a single mix request returns. Mixes are
+// short (tens of tracks), so one page is always enough.
+const mixTracksLimit = 100
 
-type v2ResourceIdentifier struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
+// pageResponse is the v1 "pages/*" envelope. Only the fields the mix list needs
+// are modelled; the rest of the page payload (graphics, colours, module
+// metadata) is ignored.
+type pageResponse struct {
+	Rows []struct {
+		Modules []struct {
+			PagedList struct {
+				Items              []pageMixItem `json:"items"`
+				TotalNumberOfItems int           `json:"totalNumberOfItems"`
+			} `json:"pagedList"`
+		} `json:"modules"`
+	} `json:"rows"`
 }
 
-type v2PlaylistAttributes struct {
-	Name        string `json:"name"`
+// pageMixItem is one mix entry inside a MIX_LIST module.
+type pageMixItem struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	SubTitle    string `json:"subTitle"`
 	Description string `json:"description"`
+	MixType     string `json:"mixType"`
 }
 
-type v2jsonAPIResponse struct {
-	Data     []v2ResourceIdentifier `json:"data"`
-	Included []json.RawMessage      `json:"included"`
+// mixItemsResponse is the v1 /mixes/{id}/items payload. Each entry wraps the
+// media object and tags it with its kind ("track" or "video").
+type mixItemsResponse struct {
+	Items []struct {
+		Item Track  `json:"item"`
+		Type string `json:"type"`
+	} `json:"items"`
+	TotalNumberOfItems int `json:"totalNumberOfItems"`
 }
 
 func (c *Client) GetUser(ctx context.Context) (*UserResponse, error) {
@@ -587,12 +606,23 @@ func (c *Client) RemoveFavorite(ctx context.Context, trackID int) error {
 	return nil
 }
 
+// GetMixes returns the user's personalised mixes (My Daily Discovery, My Mix
+// 1..N and friends).
+//
+// It reads the v1 "my_collection_my_mixes" page rather than the v2
+// userRecommendations relationship: Tidal removed
+// openapi.tidal.com/v2/userRecommendations entirely and it now answers 404 for
+// every request, which is what made the mixes view empty.
+//
+// Video mixes are skipped — their items are videos, which this player cannot
+// decode.
 func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
 	params := url.Values{}
 	params.Set("countryCode", c.Session.CountryCode)
-	params.Set("include", "myMixes")
+	params.Set("deviceType", "BROWSER")
+	params.Set("locale", "en_US")
 
-	u := BaseURLV2 + "/userRecommendations/me/relationships/myMixes?" + params.Encode()
+	u := BaseURL + "/pages/my_collection_my_mixes?" + params.Encode()
 	resp, err := c.authGet(ctx, u)
 	if err != nil {
 		return nil, err
@@ -604,116 +634,80 @@ func (c *Client) GetMixes(ctx context.Context) ([]Mix, error) {
 		return nil, apiErr("get mixes", resp.StatusCode, body)
 	}
 
-	var res v2jsonAPIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	var page pageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
 		return nil, err
 	}
 
-	// Build a lookup of playlist attributes from included resources.
-	playlistAttrs := make(map[string]v2PlaylistAttributes)
-	for _, raw := range res.Included {
-		var obj struct {
-			ID         string               `json:"id"`
-			Type       string               `json:"type"`
-			Attributes v2PlaylistAttributes `json:"attributes"`
+	var mixes []Mix
+	seen := make(map[string]struct{})
+	for _, row := range page.Rows {
+		for _, mod := range row.Modules {
+			for _, item := range mod.PagedList.Items {
+				if item.ID == "" || isVideoMixType(item.MixType) {
+					continue
+				}
+				if _, dup := seen[item.ID]; dup {
+					continue
+				}
+				seen[item.ID] = struct{}{}
+				mixes = append(mixes, Mix{
+					ID:          item.ID,
+					Title:       item.Title,
+					SubTitle:    item.SubTitle,
+					Description: item.Description,
+				})
+			}
 		}
-		if err := json.Unmarshal(raw, &obj); err != nil {
-			continue
-		}
-		if obj.Type == "playlists" {
-			playlistAttrs[obj.ID] = obj.Attributes
-		}
-	}
-
-	mixes := make([]Mix, 0, len(res.Data))
-	for _, ref := range res.Data {
-		mix := Mix{ID: ref.ID}
-		if attrs, ok := playlistAttrs[ref.ID]; ok {
-			mix.Title = attrs.Name
-			mix.SubTitle = attrs.Description
-		} else {
-			mix.Title = ref.ID
-		}
-		mixes = append(mixes, mix)
 	}
 	return mixes, nil
 }
 
+// isVideoMixType reports whether a mix serves video items rather than tracks.
+func isVideoMixType(mixType string) bool {
+	return strings.Contains(mixType, "VIDEO")
+}
+
+// GetMixTracks returns the tracks of a mix in playlist order.
+//
+// The v1 mix items endpoint returns fully populated tracks (artist and album
+// included) in a single request, so no per-track lookups are needed.
 func (c *Client) GetMixTracks(ctx context.Context, mixID string) ([]Track, error) {
-	// Step 1: fetch the ordered list of track IDs from the v2 playlist endpoint.
-	// The v2 API only returns IDs here — artist/album sideloading is not supported
-	// by this endpoint despite the include parameter existing in the spec.
 	params := url.Values{}
 	params.Set("countryCode", c.Session.CountryCode)
-	params.Set("include", "items")
+	params.Set("deviceType", "BROWSER")
+	params.Set("locale", "en_US")
+	params.Set("limit", strconv.Itoa(mixTracksLimit))
 
-	u := BaseURLV2 + "/playlists/" + mixID + "/relationships/items?" + params.Encode()
+	u := BaseURL + "/mixes/" + url.PathEscape(mixID) + "/items?" + params.Encode()
 	resp, err := c.authGet(ctx, u)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrNotFound
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, apiErr("get mix tracks", resp.StatusCode, body)
 	}
 
-	var res v2jsonAPIResponse
+	var res mixItemsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return nil, err
 	}
 
-	// Collect track IDs in order, skipping non-track refs.
-	ids := make([]string, 0, len(res.Data))
-	for _, ref := range res.Data {
-		if ref.Type == "tracks" {
-			ids = append(ids, ref.ID)
-		}
-	}
-	if len(ids) == 0 {
-		return nil, nil
-	}
-
-	// Step 2: fetch full track details (with artist + album) from the v1 API
-	// concurrently, one request per track.
-	type result struct {
-		idx   int
-		track Track
-		err   error
-	}
-	ch := make(chan result, len(ids))
-	for i, id := range ids {
-		go func(idx int, trackID string) {
-			t, err := c.GetTrack(ctx, trackID)
-			if err != nil {
-				ch <- result{idx: idx, err: err}
-				return
-			}
-			ch <- result{idx: idx, track: *t}
-		}(i, id)
-	}
-
-	type indexedTrack struct {
-		idx   int
-		track Track
-	}
-	var available []indexedTrack
-	for range ids {
-		r := <-ch
-		if errors.Is(r.err, ErrNotFound) {
+	tracks := make([]Track, 0, len(res.Items))
+	for i := range res.Items {
+		// Video mixes return "video" items, which this player cannot decode.
+		if res.Items[i].Type != "track" {
 			continue
 		}
-		if r.err != nil {
-			return nil, fmt.Errorf("failed to get mix track details: %w", r.err)
-		}
-		available = append(available, indexedTrack{r.idx, r.track})
+		t := res.Items[i].Item
+		t.normalizeArtist()
+		tracks = append(tracks, t)
 	}
-	// Sort by original playlist position.
-	slices.SortFunc(available, func(a, b indexedTrack) int { return a.idx - b.idx })
-	ordered := make([]Track, len(available))
-	for i := range available {
-		ordered[i] = available[i].track
-	}
-	return ordered, nil
+	return tracks, nil
 }

@@ -22,7 +22,6 @@ const (
 	ClientSecret = "1Nn9AfDAjxrgJFJbKNWLeAyKGVGmINuXPPLHVXAvxAg=" //nolint:gosec // G101: public OAuth client secret, not a user credential
 	AuthURL      = "https://auth.tidal.com/v1/oauth2"
 	BaseURL      = "https://api.tidal.com/v1"
-	BaseURLV2    = "https://openapi.tidal.com/v2"
 )
 
 type Client struct {

@@ -51,11 +51,37 @@ flowchart TD
 | Package | Description |
 |---------|-------------|
 | `cmd/tidalt` | Entry point. Subcommands: TUI, `daemon`, `play`, `setup`, `setup --daemon`. Session load/restore, OAuth2 device-flow login. |
-| `internal/tidal` | Tidal API client. OAuth2 auth, token refresh, REST calls (favorites, search, stream URL, mixes, radio, artist albums/top-tracks/all-tracks). |
+| `internal/tidal` | Tidal API client. OAuth2 auth, token refresh, REST calls (favorites, search, stream URL, mixes, radio, artist albums/top-tracks/all-tracks). See [Daily Mixes](#daily-mixes) for the endpoints the mix views use. |
 | `internal/player` | Bit-perfect playback via CGO. FFmpeg (libav*) demuxes/decodes the stream; libasound plays it. Direct ALSA `hw:` access, PCM format negotiation, `plughw:` fallback for fixed-format devices, PipeWire reservation, seek. |
 | `internal/store` | Persistent storage. OAuth2 session in system keychain (falls back to age-encrypted file). Volume, device, position, theme, and track cache in bbolt. |
 | `internal/ui` | BubbleTea TUI. A sidebar + main-pane layout: sections for Queue (with the hovered track's cover art), Playlists, Favorites (songs/artists/albums), Recently Played, Daily Mixes, Search, and Themes; overlays for the command palette, contextual action sheet, device select, and add-to-playlist; a centralized palette/theme system with a live-preview picker; a hybrid queue/playlist model. Runs headless in daemon mode. See [ui.md](ui.md). |
 | `internal/mpris` | MPRIS2 D-Bus server + client. Media-key commands, `io.tidalt.App` private interface for client↔server communication. |
+
+
+## Daily Mixes
+
+Daily Mixes are read from the **v1** API:
+
+| Call | Endpoint |
+|------|----------|
+| `GetMixes` | `GET /v1/pages/my_collection_my_mixes` |
+| `GetMixTracks` | `GET /v1/mixes/{mixId}/items` |
+
+Earlier releases used the v2 JSON:API endpoints
+(`openapi.tidal.com/v2/userRecommendations/me/relationships/myMixes` and
+`/v2/playlists/{id}/relationships/items`). Tidal removed the
+`userRecommendations` resource, which now returns `404 NOT_FOUND` for every
+request — that is what made the Daily Mixes view come up empty.
+
+Two properties of the v1 endpoints are worth knowing:
+
+- `/v1/mixes/{mixId}/items` returns **fully populated tracks** — artist and
+  album included — in a single request. The v2 relationship returned bare IDs,
+  which forced one `/v1/tracks/{id}` lookup per track; that fan-out is gone.
+- Video mixes (`mixType` containing `VIDEO`, e.g. `VIDEO_DAILY_MIX`) are
+  filtered out of the mix list, and any item whose `type` is not `track` is
+  dropped from a mix's items. Their contents are videos, which the player
+  cannot decode.
 
 ## Dependencies
 
