@@ -798,6 +798,38 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 		stopDecode := make(chan struct{})
 		pcmCh := make(chan pcmBuf, 2)
 
+		// Dropout detection. snd_pcm_writei blocks until the device accepts the
+		// frames, so the time it blocks measures how much headroom the DAC had.
+		// Such a write still returns a positive frame count, so no error path
+		// fires and an audible cut is otherwise recorded nowhere.
+		//
+		// A single threshold is not enough to diagnose this. Writes that never
+		// block say the app fed ALSA on time and the loss happened past the
+		// write — frames dropped on the wire, which isochronous USB never
+		// retransmits and no host-side counter records. Writes that block a
+		// little say the opposite: the app is late and the threshold merely sat
+		// too high to notice. Bucketing every write separates the two, so the
+		// histogram is the measurement and the thresholds are only labels on it.
+		//
+		// periodPlayTime is how long one period takes to play (the natural unit
+		// of a write), bufferPlayTime how long the whole buffer lasts — exceed
+		// that and the DAC certainly had nothing left to emit.
+		periodPlayTime := time.Duration(float64(ah.periodSize) / float64(ah.rate) * float64(time.Second))
+		bufferPlayTime := time.Duration(float64(ah.bufferSize) / float64(ah.rate) * float64(time.Second))
+		var (
+			writeCount   int
+			lastStallLog time.Time
+			worstStall   time.Duration
+			totalStall   time.Duration
+			// Buckets, in order: under 1ms, under a quarter period, under one
+			// period, under the whole buffer, and beyond it.
+			bucketInstant int // < 1ms — ALSA took it without waiting
+			bucketBrief   int // < periodPlayTime/4
+			bucketPeriod  int // < periodPlayTime
+			bucketBuffer  int // < bufferPlayTime
+			bucketOver    int // >= bufferPlayTime — the device ran dry
+		)
+
 		go func() {
 			defer close(pcmCh)
 			var skipped uint64
@@ -976,7 +1008,49 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 				}
 
 				off := framesDone * int(channels) * bps
+				writeStart := time.Now()
 				written := C.snd_pcm_writei(ah.pcm, unsafe.Pointer(&pcm.data[off]), C.snd_pcm_uframes_t(pcm.nFrames-framesDone))
+				blocked := time.Since(writeStart)
+				writeCount++
+				switch {
+				case blocked < time.Millisecond:
+					bucketInstant++
+				case blocked < periodPlayTime/4:
+					bucketBrief++
+				case blocked < periodPlayTime:
+					bucketPeriod++
+				case blocked < bufferPlayTime:
+					bucketBuffer++
+				default:
+					bucketOver++
+				}
+				if blocked > periodPlayTime {
+					totalStall += blocked
+					if blocked > worstStall {
+						worstStall = blocked
+					}
+				}
+				// Warn only when a write outlasts the whole buffer. Blocking
+				// for roughly one period is not a fault but how ALSA applies
+				// backpressure: with a four-period buffer the steady state is
+				// that the buffer fills, the write waits for a period to
+				// drain, and returns. Warning at one period therefore fires on
+				// healthy playback — measured at 10511 of 10639 writes on a
+				// track that sounded perfect — which buries the real signal.
+				// Outlasting the buffer is different: nothing was left to play.
+				//
+				// Rate-limited because at a 1024-frame period the loop runs ~43
+				// times a second, and a device failing repeatedly would
+				// otherwise flood the log and distort the timings being
+				// measured.
+				if blocked >= bufferPlayTime && time.Since(lastStallLog) > 5*time.Second {
+					lastStallLog = time.Now()
+					logger.L.Warn("audio dropout: write outlasted the ALSA buffer",
+						"blocked", blocked.Round(time.Millisecond),
+						"bufferPlayTime", bufferPlayTime.Round(time.Millisecond),
+						"ofWrites", writeCount,
+					)
+				}
 				if written < 0 {
 					errStr := C.GoString(C.snd_strerror(C.int(written)))
 					logger.L.Warn("snd_pcm_writei error, recovering", "err", errStr)
@@ -994,6 +1068,31 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			}
 			atomic.AddUint64(&p.samplesPlayed, uint64(pcm.nFrames))
 		}
+
+		// Report how long the track's writes blocked. The per-event warning
+		// above is rate limited, so a track peppered with short stalls can
+		// finish having logged one line or none; this distribution is what
+		// makes the shape visible. It is logged unconditionally, because
+		// "every write returned instantly" is the finding that rules the app
+		// out and points past the write — it is worth as much as a stall.
+		//
+		// Logged before the drain below, which blocks until the DAC has played
+		// the buffer out: the summary describes writes that have already
+		// happened, so it should not wait on that.
+		stalls := bucketPeriod + bucketBuffer + bucketOver
+		logger.L.Info("write blocking distribution for track",
+			"writes", writeCount,
+			"instant", bucketInstant,
+			"brief", bucketBrief,
+			"overPeriod", bucketPeriod,
+			"overQuarterBuffer", bucketBuffer,
+			"overBuffer", bucketOver,
+			"stalls", stalls,
+			"worst", worstStall.Round(time.Millisecond),
+			"totalStalled", totalStall.Round(time.Millisecond),
+			"periodPlayTime", periodPlayTime.Round(time.Millisecond),
+			"bufferPlayTime", bufferPlayTime.Round(time.Millisecond),
+		)
 
 		// The decoder hit EOF and every frame is queued but not yet played.
 		// Drain blocks until the DAC has consumed them, then leaves the PCM in
