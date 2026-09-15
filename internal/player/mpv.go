@@ -994,6 +994,30 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			}
 			atomic.AddUint64(&p.samplesPlayed, uint64(pcm.nFrames))
 		}
+
+		// The decoder hit EOF and every frame is queued but not yet played.
+		// Drain blocks until the DAC has consumed them, then leaves the PCM in
+		// SETUP state. Without this the buffer empties on its own, the PCM
+		// under-runs into XRUN, and the first snd_pcm_writei of the next track
+		// returns -EPIPE — audible as a click and a clipped opening on every
+		// auto-advance, since the same-format path deliberately keeps the
+		// device open and never reopens it. Drain is what makes the transition
+		// gapless rather than merely silent: drop would discard the tail.
+		//
+		// Every other return from this function either already reset the PCM
+		// (seek, skip) or released it (pause), so the drain belongs here at the
+		// natural-EOF exit rather than at the call site, where all of those
+		// collapse into the same (0, false, false).
+		if ah != nil && ah.pcm != nil {
+			if rc := C.snd_pcm_drain(ah.pcm); rc < 0 {
+				// A failed drain leaves the PCM in an undefined state; prepare
+				// it so the next track starts from a known-good one instead of
+				// inheriting the error.
+				logger.L.Warn("snd_pcm_drain failed at end of track",
+					"err", C.GoString(C.snd_strerror(rc)))
+				C.snd_pcm_prepare(ah.pcm)
+			}
+		}
 		return 0, false, false
 	}
 
@@ -1072,6 +1096,19 @@ func (p *Player) playbackLoop(ctx context.Context, url, device string, releaseRe
 			sampleRate = newInfo.SampleRate
 			channels = newInfo.NChannels
 			bits = newInfo.BitsPerSample
+
+			if !formatChanged && !deviceClosed {
+				// The device stays open across a same-format transition, but
+				// the end-of-track drain left it in SETUP. snd_pcm_writei will
+				// not start a stream from there, so prepare it back to
+				// PREPARED before the next track's first write.
+				if rc := C.snd_pcm_prepare(ah.pcm); rc < 0 {
+					logger.L.Error("snd_pcm_prepare failed for next track",
+						"err", C.GoString(C.snd_strerror(rc)))
+					_ = resp.Body.Close()
+					return false
+				}
+			}
 
 			if formatChanged || deviceClosed {
 				logger.L.Debug("reopening ALSA for next track",
